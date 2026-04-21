@@ -35,7 +35,7 @@ export default function HistoryScreen({ route }: HistoryScreenProps) {
     });
 
     return unsub;
-  }, []);
+  }, [userId]);
 
   return (
     <View style={{ flex: 1, padding: 10 }}>

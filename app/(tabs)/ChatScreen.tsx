@@ -1,17 +1,22 @@
 import { Audio } from 'expo-av';
 import { addDoc, collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
-import { FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { db } from '../firebase';
 
 type ChatRouteParams = {
   rideId: string;
   userId: string;
+  senderRole?: 'USER' | 'DRIVER';
+  senderName?: string;
 };
 
 type ChatMessage = {
   text: string;
-  sender: string;
+  senderId?: string;
+  sender?: string;
+  senderRole?: 'USER' | 'DRIVER';
+  senderName?: string;
   createdAt: number;
 };
 
@@ -22,7 +27,7 @@ type ChatScreenProps = {
 };
 
 export default function ChatScreen({ route }: ChatScreenProps) {
-  const { rideId, userId } = route.params;
+  const { rideId, userId, senderRole = 'USER', senderName } = route.params;
 
   const [msg, setMsg] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -56,23 +61,42 @@ export default function ChatScreen({ route }: ChatScreenProps) {
     );
 
     const unsub = onSnapshot(q, snap => {
-      setMessages(snap.docs.map(d => d.data() as ChatMessage));
+      setMessages(
+        snap.docs.map(d => d.data() as ChatMessage).sort((a, b) => a.createdAt - b.createdAt)
+      );
     });
 
     return unsub;
   }, [rideId]);
 
   const sendMessage = async () => {
-    if (!msg.trim()) return;
+    if (!rideId || !userId) {
+      Alert.alert('Chat unavailable', 'Please reopen the ride chat and try again.');
+      return;
+    }
 
-    await addDoc(collection(db, 'rides', rideId, 'messages'), {
-      text: msg,
-      sender: userId,
-      createdAt: Date.now()
-    });
+    const text = msg.trim();
+    if (!text) return;
 
-    playChatSound();
-    setMsg('');
+    try {
+      const payload: Record<string, unknown> = {
+        text,
+        senderId: userId,
+        sender: userId,
+        senderRole,
+        createdAt: Date.now(),
+      };
+
+      const trimmedSenderName = senderName?.trim();
+      if (trimmedSenderName) payload.senderName = trimmedSenderName;
+
+      await addDoc(collection(db, 'rides', rideId, 'messages'), payload);
+
+      playChatSound();
+      setMsg('');
+    } catch {
+      Alert.alert('Message not sent', 'Could not send the message right now. Please try again.');
+    }
   };
 
   return (
@@ -82,7 +106,7 @@ export default function ChatScreen({ route }: ChatScreenProps) {
         keyExtractor={(_, i) => i.toString()}
         renderItem={({ item }) => (
           <Text style={{
-            alignSelf: item.sender === userId ? 'flex-end' : 'flex-start',
+            alignSelf: (item.senderId || item.sender) === userId ? 'flex-end' : 'flex-start',
             backgroundColor: '#fff',
             margin: 6,
             padding: 10,

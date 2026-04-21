@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { decode, encode } from 'base-64';
 import { Audio } from 'expo-av';
+import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
   createUserWithEmailAndPassword,
   getAuth, onAuthStateChanged, signInWithEmailAndPassword,
@@ -11,19 +12,22 @@ import {
 import {
   addDoc, collection,
   deleteDoc,
-  doc, getDoc, getDocs, getFirestore, onSnapshot, query, setDoc, Timestamp, updateDoc, where
+  deleteField,
+  doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
-import React, { useEffect, useRef, useState } from 'react';
+import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
+import React, { Component, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
   AppState,
   Dimensions,
   FlatList,
+  Image,
   Linking, Modal, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker } from 'react-native-maps';
 import {
   FARE_ADJUSTMENTS,
   PricingDemandLevel,
@@ -36,20 +40,23 @@ import {
 
 /* ================= FIREBASE CONFIG ================= */
 const firebaseConfig = {
-  apiKey: "AIzaSyDPcG1HOj5c4_HSgapAjzAu5tXPMHXekTg",
-  authDomain: "share-it-9a030.firebaseapp.com",
-  projectId: "share-it-9a030",
-  storageBucket: "share-it-9a030.firebasestorage.app",
-  messagingSenderId: "100914160826",
-  appId: "1:100914160826:web:e1ab817586378e67e9ce83",
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+const storage = getStorage(app);
 const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
+const EARN_REWARD_MIN_FARE = 120;
+const EARN_REWARD_AMOUNT = 5;
 
-type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto';
+type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
 type Coord = { latitude: number; longitude: number };
 
 interface Ride {
@@ -64,6 +71,7 @@ interface Ride {
   driverId?: string | null;
   driverPhone?: string;
   driverName?: string;
+  driverPhotoUrl?: string;
   vehiclePlate?: string;
   driverLocation?: Coord;
   createdAt?: any;
@@ -82,6 +90,26 @@ interface Ride {
   shareAutoSeats?: number;
   shareAutoMatchWay?: 'A' | 'B';
   shareAutoRouteNote?: string;
+  comboMode?: 'PARCEL_PLUS_BIKE';
+  comboParcelSenderId?: string;
+  comboParcelSenderName?: string;
+  comboParcelSenderPhone?: string;
+  comboParcelPickup?: Coord;
+  comboParcelDrop?: Coord;
+  comboParcelPickupAddr?: string;
+  comboParcelDropAddr?: string;
+  comboParcelDistance?: number;
+  comboParcelFare?: number;
+  comboParcelEncryptedOTP?: string;
+  comboTotalFare?: number;
+  comboTotalDistance?: number;
+  comboStage?: 'parcel_pickup' | 'passenger_pickup' | 'passenger_drop' | 'parcel_drop';
+  earnBookedByUserId?: string;
+  earnBookedByName?: string;
+  earnBookedByEmail?: string;
+  earnPassengerName?: string;
+  earnPassengerPhone?: string;
+  earnPassengerEmail?: string;
 }
 
 interface ShareAutoPool {
@@ -133,17 +161,25 @@ interface PoolPassenger {
   dropAddr?: string;
 }
 
+const isActiveRideStatus = (status: Ride['status'] | 'cancelled') =>
+  status === 'waiting' || status === 'accepted' || status === 'started';
+
 interface ShareAutoMatchResult {
   way: 'A' | 'B';
   passengers: PoolPassenger[];
   score: number;
 }
 
-const icons = { Bike: '🏍️', Auto: '🛺', Cab: '🚕', ShareAuto: '👥' };
-const SECRET_KEY = 'SHARE_IT_SECURE_2026';
+const icons = { Bike: '🏍️', Auto: '🛺', Cab: '🚕', ShareAuto: '👥', Parcel: '📦' };
+const SECRET_KEY = process.env.EXPO_PUBLIC_OTP_SECRET_KEY || '';
 const FIVE_MIN_MS = 5 * 60 * 1000;
 const HYDERABAD_CENTER: Coord = { latitude: 17.385, longitude: 78.4867 };
 const HYDERABAD_SERVICE_RADIUS_KM = 40;
+const DEFAULT_MAP_REGION = {
+  ...HYDERABAD_CENTER,
+  latitudeDelta: 0.05,
+  longitudeDelta: 0.05,
+};
 const DRIVER_ALERT_SOUND_URL = 'https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg';
 const CHAT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/pop.ogg';
 const VEHICLE_SELECT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg';
@@ -156,7 +192,45 @@ const encryptOTP = (otp: string) => encode(otp.split('').reverse().join('') + SE
 const decryptOTP = (val: string) => decode(val).replace(SECRET_KEY, '').split('').reverse().join('');
 const generateOTP = () => Math.floor(1000 + Math.random() * 9000).toString();
 
-export default function App() {
+type AppErrorBoundaryProps = {
+  children: React.ReactNode;
+};
+
+type AppErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  constructor(props: AppErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): AppErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch() {
+    // Keep the app alive and show fallback UI in production crashes.
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#FFF' }}>
+          <Text style={{ fontSize: 20, fontWeight: '700', marginBottom: 10 }}>Something went wrong</Text>
+          <Text style={{ textAlign: 'center', color: '#555' }}>
+            Please reopen the app. If this continues, sign out and sign in again.
+          </Text>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function RideAppScreen() {
   const [loggedIn, setLoggedIn] = useState(false);
   const mapRef = useRef<MapView | null>(null);
   const [isSignup, setIsSignup] = useState(false);
@@ -171,6 +245,9 @@ export default function App() {
   const [isIdentitySet, setIsIdentitySet] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [profilePhone, setProfilePhone] = useState('');
+  const [profileEarnWallet, setProfileEarnWallet] = useState(0);
+  const [driverPhotoUrl, setDriverPhotoUrl] = useState('');
+  const [driverPhotoUri, setDriverPhotoUri] = useState('');
 
   // INDIVIDUAL DRIVER STATS [cite: 165]
   const [driverStats, setDriverStats] = useState({ 
@@ -195,12 +272,12 @@ export default function App() {
   const [userBookedRide, setUserBookedRide] = useState<Ride | null>(null);
   const [currentRide, setCurrentRide] = useState<Ride | null>(null);
   const [driverVehicle, setDriverVehicle] = useState<RideType | null>(null);
-  const [fares, setFares] = useState({ Bike: 0, Auto: 0, Cab: 0, ShareAuto: 0 });
+  const [fares, setFares] = useState({ Bike: 0, Auto: 0, Cab: 0, ShareAuto: 0, Parcel: 0 });
   const [otpInput, setOtpInput] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showTipModal, setShowTipModal] = useState(false);
 
-  const [searchTimer, setSearchTimer] = useState(0);
+  const [, setSearchTimer] = useState(0);
   const [searchRadius, setSearchRadius] = useState(1.0);
   const searchAnim = useRef(new Animated.Value(1)).current;
 
@@ -215,7 +292,7 @@ export default function App() {
   const chatLastMessageAtRef = useRef(0);
   const chatListenerHydratedRef = useRef(false);
   const [shareAutoSearchActive, setShareAutoSearchActive] = useState(false);
-  const [shareAutoSearchStartedAt, setShareAutoSearchStartedAt] = useState(0);
+  const [, setShareAutoSearchStartedAt] = useState(0);
   const [shareAutoPoolId, setShareAutoPoolId] = useState('');
   const [showShareAutoFallback, setShowShareAutoFallback] = useState(false);
   const [shareAutoFallbackReason, setShareAutoFallbackReason] = useState('');
@@ -224,10 +301,17 @@ export default function App() {
   const [shareAutoElapsed, setShareAutoElapsed] = useState(0);
   const [showShareAutoTerms, setShowShareAutoTerms] = useState(false);
   const [showShareAutoIntro, setShowShareAutoIntro] = useState(false);
+  const [showParcelTerms, setShowParcelTerms] = useState(false);
+  const [showEarnPage, setShowEarnPage] = useState(false);
+  const [earnPassengerName, setEarnPassengerName] = useState('');
+  const [earnPassengerPhone, setEarnPassengerPhone] = useState('');
+  const [earnPassengerEmail, setEarnPassengerEmail] = useState('');
+  const [earnRideType, setEarnRideType] = useState<'Bike' | 'Auto' | 'Cab'>('Bike');
   const [chatTargetPassengerId, setChatTargetPassengerId] = useState<string>('ALL');
   const arrivalAutoPulse = useRef(new Animated.Value(0)).current;
   const [shareAutoFoundMembers, setShareAutoFoundMembers] = useState(0);
   const autoCancelInProgressRef = useRef(false);
+  const lastUserRideStateRef = useRef<{ id: string; status: Ride['status'] } | null>(null);
   const [showShareAutoGame, setShowShareAutoGame] = useState(false);
   const [shareAutoGamePausedByRide, setShareAutoGamePausedByRide] = useState(false);
   const [gameMode, setGameMode] = useState<'bird' | 'zombie'>('bird');
@@ -243,6 +327,7 @@ export default function App() {
   const activeRide = mode === 'USER' ? userBookedRide : currentRide;
 
   const isValidMobile = (val: string) => /^[6-9]\d{9}$/.test(val);
+  const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
 
   const getRideCreatedAtMs = (createdAt: any): number => {
     if (!createdAt) return 0;
@@ -262,12 +347,6 @@ export default function App() {
   const getDistanceFromDriver = (ride: Ride) => {
     if (!location) return Number.POSITIVE_INFINITY;
     return calcDist(location, ride.pickup);
-  };
-
-  const isShareAutoCandidate = (ride: Ride, pickup: Coord, drop: Coord) => {
-    if (ride.type !== 'ShareAuto') return false;
-    if (!ride.drop) return false;
-    return calcDist(ride.drop, drop) <= 3;
   };
 
   const getClusterRadiusKm = (points: Coord[]) => {
@@ -404,11 +483,6 @@ export default function App() {
 
     if (bCandidates.length > 0) return { way: 'B' as const, passenger: bCandidates[0] };
     return null;
-  };
-
-  const isPeakHour = () => {
-    const hour = new Date().getHours();
-    return (hour >= 8 && hour < 11) || (hour >= 17 && hour < 21);
   };
 
   type RidePricingType = PricingRideType;
@@ -551,9 +625,6 @@ export default function App() {
     return Math.min(1, activeUsers / 30);
   };
 
-  const roundToNearestFive = (value: number) => Math.round(value / 5) * 5;
-  const roundToNearestFour = (value: number) => Math.round(value / 4) * 4;
-  const applyBikeExtraDiscount = (value: number) => Math.max(0, Math.round(value * 0.96));
   const getFinalDiscountRate = () => {
     const demandFactor = getDemandFactor();
     const appUserFactor = getAppUserFactor();
@@ -561,9 +632,65 @@ export default function App() {
     // Inverse relation: higher activity/users => lower discount (closer to 12.5%).
     return 0.16 - (0.035 * activityFactor); // 16% down to 12.5%
   };
+
+  const roundToNearestFive = (value: number) => Math.round(value / 5) * 5;
+  const roundToNearestFour = (value: number) => Math.round(value / 4) * 4;
+  const applyBikeExtraDiscount = (value: number) => Math.max(0, Math.round(value * 0.96));
   const applyFinalDiscount = (value: number) => {
     const discountRate = getFinalDiscountRate();
     return Math.max(0, Math.round(value * (1 - discountRate)));
+  };
+
+  const isPeakHour = () => {
+    const hour = new Date().getHours();
+    return (hour >= 8 && hour < 11) || (hour >= 17 && hour < 21);
+  };
+
+  const isRainyTime = () => {
+    const month = new Date().getMonth() + 1;
+    return month >= 6 && month <= 9;
+  };
+
+  const isCabPeakHour = () => {
+    const hour = new Date().getHours();
+    return (hour >= 8 && hour < 11) || (hour >= 17 && hour < 22);
+  };
+
+  const getDynamicBikeFare = (distanceKm: number) => {
+    if (distanceKm <= 1.5) return 20;
+    if (distanceKm <= 2.5) {
+      const demandLevel = getDemandLevel();
+      if (demandLevel === 'low') return 25;
+      if (demandLevel === 'normal') return 28;
+      if (demandLevel === 'high') return 30;
+      return 32;
+    }
+    const demandLevel = getDemandLevel();
+    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.bike) * 60);
+    return calculateRideFare('bike', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
+  };
+
+  const getDynamicParcelFare = (distanceKm: number) => {
+    const bikeFare = getDynamicBikeFare(distanceKm);
+    return roundToNearestFive(Math.max(0, Math.round(bikeFare * 0.45)));
+  };
+
+  const getDynamicAutoFare = (distanceKm: number) => {
+    if (distanceKm <= 1.3) return 45;
+    if (distanceKm <= 2) return 65;
+    if (distanceKm <= 3) return 85;
+    const demandLevel = getDemandLevel();
+    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.auto) * 60);
+    return calculateRideFare('auto', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
+  };
+
+  const getDynamicCabFare = (distanceKm: number) => {
+    if (distanceKm <= 1.5) return 65;
+    if (distanceKm <= 2.5) return 100;
+    if (distanceKm <= 3.7) return 150;
+    const demandLevel = getDemandLevel();
+    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.car) * 60);
+    return calculateRideFare('car', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
   };
 
   const getShareAutoDemandIncreaseRate = () => {
@@ -577,34 +704,6 @@ export default function App() {
   const applyShareAutoDemandIncrease = (value: number) => {
     const increaseRate = getShareAutoDemandIncreaseRate();
     return Math.round(value * (1 + increaseRate));
-  };
-
-  const getDynamicBikeFare = (distanceKm: number) => {
-    const demandLevel = getDemandLevel();
-    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.bike) * 60);
-    return calculateRideFare('bike', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
-  };
-
-  const getDynamicAutoFare = (distanceKm: number) => {
-    const demandLevel = getDemandLevel();
-    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.auto) * 60);
-    return calculateRideFare('auto', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
-  };
-
-  const isCabPeakHour = () => {
-    const hour = new Date().getHours();
-    return (hour >= 8 && hour < 11) || (hour >= 17 && hour < 22);
-  };
-
-  const isRainyTime = () => {
-    const month = new Date().getMonth() + 1;
-    return month >= 6 && month <= 9;
-  };
-
-  const getDynamicCabFare = (distanceKm: number) => {
-    const demandLevel = getDemandLevel();
-    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.car) * 60);
-    return calculateRideFare('car', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
   };
 
   const getShareAutoTwoPassengerFare = (distanceKm: number) => {
@@ -652,11 +751,6 @@ export default function App() {
     setShareAutoFallbackReason(reason);
     setShowShareAutoFallback(true);
     resetShareAutoSearch();
-  };
-
-  const handleGameTap = (cellIndex: number) => {
-    // Deprecated: old mini-game tap handler retained for compatibility.
-    void cellIndex;
   };
 
   const getRandomTargetPosition = () => ({
@@ -711,29 +805,33 @@ export default function App() {
     if (!shareAutoSearchActive || !shareAutoPoolId || !pickupCoords || !destCoords) return;
 
     const updateFoundMembers = async () => {
-      const poolSnapshot = await getDocs(query(collection(db, 'shareAutoPools'), where('status', '==', 'searching')));
-      const candidates = poolSnapshot.docs
-        .map((d) => ({ id: d.id, ...d.data() } as ShareAutoPool))
-        .filter((pool) => pool.id !== shareAutoPoolId)
-        .map(toPoolPassenger);
+      try {
+        const poolSnapshot = await getDocs(query(collection(db, 'shareAutoPools'), where('status', '==', 'searching')));
+        const candidates = poolSnapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as ShareAutoPool))
+          .filter((pool) => pool.id !== shareAutoPoolId)
+          .map(toPoolPassenger);
 
-      const selfPassenger: PoolPassenger = {
-        id: currentUserId,
-        name: profileName,
-        phone: profilePhone,
-        pickup: pickupCoords,
-        drop: destCoords,
-        pickupAddr: pickupInput,
-        dropAddr: destination,
-      };
+        const selfPassenger: PoolPassenger = {
+          id: currentUserId,
+          name: profileName,
+          phone: profilePhone,
+          pickup: pickupCoords,
+          drop: destCoords,
+          pickupAddr: pickupInput,
+          dropAddr: destination,
+        };
 
-      const matched = findShareAutoMatch(selfPassenger, candidates);
-      const partial = !matched ? findPartialShareAuto(selfPassenger, candidates) : null;
-      if (matched) {
-        setShareAutoFoundMembers(2);
-      } else if (partial) {
-        setShareAutoFoundMembers(1);
-      } else {
+        const matched = findShareAutoMatch(selfPassenger, candidates);
+        const partial = !matched ? findPartialShareAuto(selfPassenger, candidates) : null;
+        if (matched) {
+          setShareAutoFoundMembers(2);
+        } else if (partial) {
+          setShareAutoFoundMembers(1);
+        } else {
+          setShareAutoFoundMembers(0);
+        }
+      } catch {
         setShareAutoFoundMembers(0);
       }
     };
@@ -751,8 +849,10 @@ export default function App() {
     return 2;
   };
 
+  const isDriverEligibleForRide = (ride: Ride) => ride.type === driverVehicle || (ride.type === 'Parcel' && driverVehicle === 'Bike');
+
   const visibleDriverRides = rides
-    .filter((ride) => ride.type === driverVehicle && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
+    .filter((ride) => isDriverEligibleForRide(ride) && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
     .filter((ride) => ride.type !== 'ShareAuto' || !location || getDistanceFromDriver(ride) <= 3)
     .sort((a, b) => {
       const stageDiff = getDriverNotificationStage(a) - getDriverNotificationStage(b);
@@ -919,47 +1019,86 @@ export default function App() {
 
   useEffect(() => {
     const cleanup = setInterval(async () => {
-      const fiveMinsAgo = new Date(Date.now() - FIVE_MIN_MS);
-      const q = query(collection(db, 'rides'), where('status', '==', 'waiting'));
-      const snapshot = await getDocs(q);
-      snapshot.forEach((d) => {
-        if (d.data().createdAt?.toDate() < fiveMinsAgo) deleteDoc(doc(db, 'rides', d.id));
-      });
+      try {
+        const fiveMinsAgo = new Date(Date.now() - FIVE_MIN_MS);
+        const q = query(collection(db, 'rides'), where('status', '==', 'waiting'));
+        const snapshot = await getDocs(q);
+        snapshot.forEach((d) => {
+          if (d.data().createdAt?.toDate() < fiveMinsAgo) deleteDoc(doc(db, 'rides', d.id));
+        });
+      } catch {
+        // Ignore transient cleanup failures (permissions/network).
+      }
     }, 30000);
     return () => clearInterval(cleanup);
   }, []);
 
   useEffect(() => {
-    const init = async () => {
-      onAuthStateChanged(auth, async (user) => {
-        setLoggedIn(!!user);
-        if (!user) {
-          setProfileName('');
-          setProfilePhone('');
-          return;
-        }
+    let mounted = true;
+    let locationSubscription: Location.LocationSubscription | null = null;
+    const authUnsubscribe = onAuthStateChanged(auth, async (user) => {
+      setLoggedIn(!!user);
+      if (!user) {
+        if (!mounted) return;
+        setProfileName('');
+        setProfilePhone('');
+        setProfileEarnWallet(0);
+        return;
+      }
+
+      try {
         const userSnap = await getDoc(doc(db, 'users', user.uid));
+        if (!mounted) return;
         if (userSnap.exists()) {
-          const userData = userSnap.data() as { name?: string; phone?: string };
+          const userData = userSnap.data() as { name?: string; phone?: string; email?: string; earnWallet?: number };
           setProfileName(userData.name || '');
           setProfilePhone(userData.phone || '');
+          setEmail(userData.email || user.email || '');
+          setProfileEarnWallet(userData.earnWallet || 0);
+        } else {
+          setProfileName('');
+          setProfilePhone('');
+          setEmail(user.email || '');
+          setProfileEarnWallet(0);
         }
-      });
-      const savedVehicle = await AsyncStorage.getItem('driver_vehicle');
-      if (savedVehicle) setDriverVehicle(savedVehicle as RideType);
+      } catch {
+        if (!mounted) return;
+        setProfileName('');
+        setProfilePhone('');
+        setEmail(user.email || '');
+        setProfileEarnWallet(0);
+      }
+    });
 
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
-        const initial = await Location.getCurrentPositionAsync({});
-        const pos = { latitude: initial.coords.latitude, longitude: initial.coords.longitude };
-        setLocation(pos);
-        setPickupCoords(pos);
-        Location.watchPositionAsync({ distanceInterval: 10 }, (loc) => {
-          setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-        });
+    const init = async () => {
+      try {
+        const savedVehicle = await AsyncStorage.getItem('driver_vehicle');
+        if (mounted && savedVehicle) setDriverVehicle(savedVehicle as RideType);
+
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const initial = await Location.getCurrentPositionAsync({});
+          const pos = { latitude: initial.coords.latitude, longitude: initial.coords.longitude };
+          if (mounted) {
+            setLocation(pos);
+            setPickupCoords(pos);
+          }
+          locationSubscription = await Location.watchPositionAsync({ distanceInterval: 10 }, (loc) => {
+            if (!mounted) return;
+            setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+          });
+        }
+      } catch {
+        // Keep app functional even when location/storage services fail.
       }
     };
     init();
+
+    return () => {
+      mounted = false;
+      authUnsubscribe();
+      locationSubscription?.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -977,7 +1116,17 @@ export default function App() {
 
     const unsub = onSnapshot(collection(db, 'rides', activeRide.id, 'messages'), (snapshot) => {
       const fullList = snapshot.docs
-        .map(d => d.data() as ChatMessage)
+        .map(d => {
+          const data = d.data() as Partial<ChatMessage> & { sender?: string; senderName?: string };
+          const senderId = data.senderId || data.sender || '';
+          return {
+            ...data,
+            senderId,
+            senderRole: data.senderRole || (senderId === currentUserId ? mode : mode === 'USER' ? 'DRIVER' : 'USER'),
+            senderName: data.senderName,
+            createdAt: typeof data.createdAt === 'number' ? data.createdAt : 0,
+          } as ChatMessage;
+        })
         .sort((a, b) => a.createdAt - b.createdAt);
 
       const list = fullList.filter((message) => {
@@ -1002,6 +1151,8 @@ export default function App() {
       if (!chatOpen && last && last.senderRole !== mode) {
         setHasUnreadChat(true);
       }
+    }, () => {
+      // Ignore chat stream permission/network errors.
     });
 
     return unsub;
@@ -1058,7 +1209,7 @@ export default function App() {
 
   useEffect(() => {
     if (mode !== 'DRIVER' || !currentRide?.id || !location) return;
-    updateDoc(doc(db, 'rides', currentRide.id), { driverLocation: location });
+    updateDoc(doc(db, 'rides', currentRide.id), { driverLocation: location }).catch(() => undefined);
   }, [mode, currentRide?.id, location]);
 
   useEffect(() => {
@@ -1068,6 +1219,8 @@ export default function App() {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
       list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
       setDriverHistory(list);
+    }, () => {
+      setDriverHistory([]);
     });
     return unsub;
   }, [mode, currentUserId]);
@@ -1076,7 +1229,7 @@ export default function App() {
     if (mode !== 'DRIVER' || !driverVehicle || !isIdentitySet || !!currentRide) return;
 
     const freshRideIds = rides
-      .filter(r => r.type === driverVehicle && !ignoredRides.includes(r.id || '') && isFreshWaitingRide(r))
+      .filter(r => isDriverEligibleForRide(r) && !ignoredRides.includes(r.id || '') && isFreshWaitingRide(r))
       .map(r => r.id)
       .filter((id): id is string => !!id);
 
@@ -1097,16 +1250,22 @@ export default function App() {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Ride));
       setRides(list);
       if (userBookedRide?.id) {
-        setUserBookedRide(list.find(r => r.id === userBookedRide.id) || null);
+        const nextRide = list.find(r => r.id === userBookedRide.id) || null;
+        setUserBookedRide(nextRide && isActiveRideStatus(nextRide.status) ? nextRide : null);
       } else if (currentUserId) {
-        setUserBookedRide(
-          list.find(r =>
-            r.passengerId === currentUserId ||
-            r.shareAutoPassengerIds?.includes(currentUserId)
-          ) || null
-        );
+        const nextRide = list.find(r =>
+          r.passengerId === currentUserId ||
+          r.comboParcelSenderId === currentUserId ||
+          r.shareAutoPassengerIds?.includes(currentUserId)
+        ) || null;
+        setUserBookedRide(nextRide && isActiveRideStatus(nextRide.status) ? nextRide : null);
       }
-      if (currentRide?.id) setCurrentRide(list.find(r => r.id === currentRide.id) || null);
+      if (currentRide?.id) {
+        const nextDriverRide = list.find(r => r.id === currentRide.id) || null;
+        setCurrentRide(nextDriverRide && isActiveRideStatus(nextDriverRide.status) ? nextDriverRide : null);
+      }
+    }, () => {
+      setRides([]);
     });
     return unsub;
   }, [userBookedRide?.id, currentRide?.id, currentUserId]);
@@ -1318,16 +1477,12 @@ export default function App() {
   useEffect(() => {
     if (pickupCoords && destCoords) {
         const dist = calcDist(pickupCoords, destCoords);
-        const demandLevel = getDemandLevel();
-        const currentHour = new Date().getHours();
-        const bikePricing = calculateRideFare('bike', dist, Math.max(1, (dist / FARE_ADJUSTMENTS.estimatedSpeedKmh.bike) * 60), 0, demandLevel, currentHour);
-        const autoPricing = calculateRideFare('auto', dist, Math.max(1, (dist / FARE_ADJUSTMENTS.estimatedSpeedKmh.auto) * 60), 0, demandLevel, currentHour);
-        const carPricing = calculateRideFare('car', dist, Math.max(1, (dist / FARE_ADJUSTMENTS.estimatedSpeedKmh.car) * 60), 0, demandLevel, currentHour);
         setFares({
-          Bike: bikePricing.finalFare,
-          Auto: autoPricing.finalFare,
-          Cab: carPricing.finalFare,
+          Bike: getDynamicBikeFare(dist),
+          Auto: getDynamicAutoFare(dist),
+          Cab: getDynamicCabFare(dist),
           ShareAuto: getShareAutoFare(dist, 3),
+          Parcel: getDynamicParcelFare(dist),
         });
     }
   }, [destCoords, pickupCoords, rides]);
@@ -1342,6 +1497,62 @@ export default function App() {
 
   const isWithinHyderabadService = (coord: Coord) => {
     return calcDist(HYDERABAD_CENTER, coord) <= HYDERABAD_SERVICE_RADIUS_KM;
+  };
+
+  const isComboParcelSender = (ride: Ride | null) => !!ride && ride.comboMode === 'PARCEL_PLUS_BIKE' && ride.comboParcelSenderId === currentUserId;
+
+  const getUserPerspectivePickup = (ride: Ride | null) => {
+    if (!ride) return null;
+    if (isComboParcelSender(ride)) return ride.comboParcelPickup || ride.pickup;
+    return ride.pickup;
+  };
+
+  const getUserPerspectiveDrop = (ride: Ride | null) => {
+    if (!ride) return null;
+    if (isComboParcelSender(ride)) return ride.comboParcelDrop || ride.drop;
+    return ride.drop;
+  };
+
+  const getUserPerspectivePickupAddr = (ride: Ride | null) => {
+    if (!ride) return 'N/A';
+    if (isComboParcelSender(ride)) return ride.comboParcelPickupAddr || ride.pickupAddr || 'Pickup';
+    return ride.pickupAddr || 'Pickup';
+  };
+
+  const getUserPerspectiveDropAddr = (ride: Ride | null) => {
+    if (!ride) return 'N/A';
+    if (isComboParcelSender(ride)) return ride.comboParcelDropAddr || ride.dropAddr || 'Drop';
+    return ride.dropAddr || 'Drop';
+  };
+
+  const getUserPerspectiveFare = (ride: Ride | null) => {
+    if (!ride) return 0;
+    if (isComboParcelSender(ride)) return ride.comboParcelFare || ride.fare;
+    return ride.fare;
+  };
+
+  const getUserRideLabel = (ride: Ride | null) => {
+    if (!ride) return '';
+    if (isComboParcelSender(ride)) return 'Parcel';
+    return ride.type;
+  };
+
+  const getDirectionCosine = (aStart: Coord, aEnd: Coord, bStart: Coord, bEnd: Coord) => {
+    const ax = aEnd.latitude - aStart.latitude;
+    const ay = aEnd.longitude - aStart.longitude;
+    const bx = bEnd.latitude - bStart.latitude;
+    const by = bEnd.longitude - bStart.longitude;
+    const aMag = Math.sqrt((ax * ax) + (ay * ay));
+    const bMag = Math.sqrt((bx * bx) + (by * by));
+    if (!aMag || !bMag) return -1;
+    return ((ax * bx) + (ay * by)) / (aMag * bMag);
+  };
+
+  const isSameDirectionForCombo = (parcelPickup: Coord, parcelDrop: Coord, bikePickup: Coord, bikeDrop: Coord) => {
+    const pickupGap = calcDist(parcelPickup, bikePickup);
+    const dropGap = calcDist(parcelDrop, bikeDrop);
+    const directionSimilarity = getDirectionCosine(parcelPickup, parcelDrop, bikePickup, bikeDrop);
+    return pickupGap <= 3 && dropGap <= 5 && directionSimilarity >= 0.55;
   };
 
   const handleTip = async (amt: number) => {
@@ -1362,12 +1573,19 @@ export default function App() {
         Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
         return;
       }
-      void playMarkerSound(400);
+      await playMarkerSound(400);
       type === 'pickup' ? setPickupCoords(coord) : setDestCoords(coord);
     }
   };
 
-  const bookRide = async (rideType?: RideType) => {
+  const bookRide = async (
+    rideType?: RideType,
+    earnMeta?: {
+      passengerName: string;
+      passengerPhone: string;
+      passengerEmail: string;
+    }
+  ) => {
     const rideChoice = rideType ?? selectedRide;
     if (!rideChoice || !pickupCoords || !destCoords) return;
     if (!isWithinHyderabadService(pickupCoords) || !isWithinHyderabadService(destCoords)) {
@@ -1417,18 +1635,142 @@ export default function App() {
       return;
     }
 
+    if (rideChoice === 'Parcel') {
+      const parcelFare = fares.Parcel;
+      const parcelOtp = encryptOTP(generateOTP());
+
+      const bikeQ = query(collection(db, 'rides'), where('status', '==', 'waiting'), where('type', '==', 'Bike'));
+      const bikeSnapshot = await getDocs(bikeQ);
+      const bikeCandidates = bikeSnapshot.docs
+        .map((d) => ({ id: d.id, ...d.data() } as Ride))
+        .filter((r) => r.passengerId && r.passengerId !== currentUserId)
+        .filter((r) => !r.comboMode)
+        .filter((r) => isSameDirectionForCombo(pickupCoords, destCoords, r.pickup, r.drop));
+
+      bikeCandidates.sort((a, b) => {
+        const aScore = calcDist(pickupCoords, a.pickup) + calcDist(destCoords, a.drop);
+        const bScore = calcDist(pickupCoords, b.pickup) + calcDist(destCoords, b.drop);
+        return aScore - bScore;
+      });
+
+      const matchedBikeRide = bikeCandidates[0];
+
+      if (matchedBikeRide?.id) {
+        const comboTotalFare = (matchedBikeRide.fare || 0) + parcelFare;
+        const comboTotalDistance =
+          calcDist(pickupCoords, matchedBikeRide.pickup) +
+          calcDist(matchedBikeRide.pickup, matchedBikeRide.drop) +
+          calcDist(matchedBikeRide.drop, destCoords);
+
+        await updateDoc(doc(db, 'rides', matchedBikeRide.id), {
+          comboMode: 'PARCEL_PLUS_BIKE',
+          comboParcelSenderId: currentUserId,
+          comboParcelSenderName: profileName,
+          comboParcelSenderPhone: profilePhone,
+          comboParcelPickup: pickupCoords,
+          comboParcelDrop: destCoords,
+          comboParcelPickupAddr: pickupInput,
+          comboParcelDropAddr: destination,
+          comboParcelDistance: tripDistanceKm,
+          comboParcelFare: parcelFare,
+          comboParcelEncryptedOTP: parcelOtp,
+          comboTotalFare,
+          comboTotalDistance,
+          comboStage: 'parcel_pickup',
+          createdAt: Timestamp.now(),
+        });
+
+        setUserBookedRide({
+          ...matchedBikeRide,
+          comboMode: 'PARCEL_PLUS_BIKE',
+          comboParcelSenderId: currentUserId,
+          comboParcelSenderName: profileName,
+          comboParcelSenderPhone: profilePhone,
+          comboParcelPickup: pickupCoords,
+          comboParcelDrop: destCoords,
+          comboParcelPickupAddr: pickupInput,
+          comboParcelDropAddr: destination,
+          comboParcelDistance: tripDistanceKm,
+          comboParcelFare: parcelFare,
+          comboParcelEncryptedOTP: parcelOtp,
+          comboTotalFare,
+          comboTotalDistance,
+          comboStage: 'parcel_pickup',
+        });
+        return;
+      }
+    }
+
     const bFare = fares[rideChoice];
     const rideData: Ride = {
       type: rideChoice, fare: bFare, baseFare: bFare, tip: 0,
       distance: tripDistanceKm, pickup: pickupCoords, drop: destCoords,
       pickupAddr: pickupInput, dropAddr: destination, encryptedOTP: encryptOTP(generateOTP()),
       passengerId: currentUserId,
-      passengerName: profileName,
-      passengerPhone: profilePhone,
+      passengerName: earnMeta?.passengerName || profileName,
+      passengerPhone: earnMeta?.passengerPhone || profilePhone,
+      ...(earnMeta
+        ? {
+            earnBookedByUserId: currentUserId,
+            earnBookedByName: profileName,
+            earnBookedByEmail: auth.currentUser?.email || email.trim(),
+            earnPassengerName: earnMeta.passengerName,
+            earnPassengerPhone: earnMeta.passengerPhone,
+            earnPassengerEmail: earnMeta.passengerEmail,
+          }
+        : {}),
       status: 'waiting', createdAt: Timestamp.now()
     };
     const ref = await addDoc(collection(db, 'rides'), rideData);
     setUserBookedRide({ ...rideData, id: ref.id });
+  };
+
+  const openEarnPage = () => {
+    setEarnPassengerName(profileName || '');
+    setEarnPassengerPhone(profilePhone || '');
+    setEarnPassengerEmail((auth.currentUser?.email || email || '').trim());
+    setEarnRideType('Bike');
+    setShowEarnPage(true);
+  };
+
+  const bookEarnRide = async () => {
+    const passengerName = earnPassengerName.trim();
+    const passengerPhone = earnPassengerPhone.trim();
+    const passengerEmail = earnPassengerEmail.trim().toLowerCase();
+
+    if (!passengerName) {
+      Alert.alert('Required', 'Please enter passenger name.');
+      return;
+    }
+    if (!isValidMobile(passengerPhone)) {
+      Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number for passenger.');
+      return;
+    }
+    if (!isValidEmail(passengerEmail)) {
+      Alert.alert('Invalid email', 'Enter a valid passenger email address.');
+      return;
+    }
+
+    await bookRide(earnRideType, {
+      passengerName,
+      passengerPhone,
+      passengerEmail,
+    });
+    setShowEarnPage(false);
+  };
+
+  const creditEarnRewardIfEligible = async (ride: Ride) => {
+    if (!ride.earnBookedByUserId || ride.fare <= EARN_REWARD_MIN_FARE) return;
+    try {
+      await updateDoc(doc(db, 'users', ride.earnBookedByUserId), {
+        earnWallet: increment(EARN_REWARD_AMOUNT),
+      });
+      if (ride.earnBookedByUserId === currentUserId) {
+        setProfileEarnWallet((prev) => prev + EARN_REWARD_AMOUNT);
+      }
+    } catch {
+      // Ignore reward credit failure and keep ride completion uninterrupted.
+    }
   };
 
   const requestRide = async () => {
@@ -1441,11 +1783,20 @@ export default function App() {
       }
       return;
     }
+    if (selectedRide === 'Parcel') {
+      setShowParcelTerms(true);
+      return;
+    }
     await bookRide();
   };
 
   const sendChatMessage = async () => {
     if (!activeRide?.id || !chatText.trim()) return;
+    const senderId = currentUserId || (mode === 'DRIVER' ? currentRide?.driverId || '' : activeRide?.passengerId || '');
+    if (!senderId) {
+      Alert.alert('Chat unavailable', 'Please wait for your ride context to load and try again.');
+      return;
+    }
 
     const targetPassengerName =
       mode === 'DRIVER' &&
@@ -1454,25 +1805,38 @@ export default function App() {
         ? activeRide.shareAutoPassengerNames?.[activeRide.shareAutoPassengerIds?.findIndex((id) => id === chatTargetPassengerId) || 0]
         : undefined;
 
-    await addDoc(collection(db, 'rides', activeRide.id, 'messages'), {
-      text: chatText.trim(),
-      senderId: currentUserId,
-      senderRole: mode,
-      senderName: mode === 'DRIVER' ? driverName : profileName,
-      targetPassengerId: mode === 'DRIVER' && activeRide.type === 'ShareAuto' && chatTargetPassengerId !== 'ALL' ? chatTargetPassengerId : undefined,
-      targetPassengerName,
-      createdAt: Date.now()
-    });
+    try {
+      const payload: Record<string, unknown> = {
+        text: chatText.trim(),
+        senderId,
+        senderRole: mode,
+        createdAt: Date.now()
+      };
 
-    playChatSound();
-    setChatText('');
+      const senderName = (mode === 'DRIVER' ? driverName : profileName)?.trim();
+      if (senderName) payload.senderName = senderName;
+
+      if (mode === 'DRIVER' && activeRide.type === 'ShareAuto' && chatTargetPassengerId !== 'ALL') {
+        payload.targetPassengerId = chatTargetPassengerId;
+        if (targetPassengerName) payload.targetPassengerName = targetPassengerName;
+      }
+
+      await addDoc(collection(db, 'rides', activeRide.id, 'messages'), payload);
+
+      playChatSound();
+      setChatText('');
+    } catch {
+      Alert.alert('Message not sent', 'Could not send the message right now. Please try again.');
+    }
   };
 
   const sendDriverReachingMessage = async (passengerId: string, passengerName: string) => {
     if (!activeRide?.id || mode !== 'DRIVER') return;
+    const senderId = currentUserId || currentRide?.driverId || '';
+    if (!senderId) return;
     await addDoc(collection(db, 'rides', activeRide.id, 'messages'), {
       text: `Reaching ${passengerName}. Please be ready at pickup point.`,
-      senderId: currentUserId,
+      senderId,
       senderRole: 'DRIVER',
       senderName: driverName,
       targetPassengerId: passengerId,
@@ -1486,20 +1850,68 @@ export default function App() {
     status: 'completed' | 'cancelled',
     cancelledBy?: 'DRIVER' | 'PASSENGER'
   ) => {
-    await addDoc(collection(db, 'rideHistory'), {
-      rideId: ride.id,
+    const historyPayload: Record<string, any> = {
+      rideId: ride.id || '',
       rideType: ride.type,
-      pickupAddr: ride.pickupAddr,
-      dropAddr: ride.dropAddr,
       fare: ride.fare,
       status,
-      cancelledBy,
-      driverId: ride.driverId,
-      driverName: ride.driverName,
-      passengerId: ride.passengerId,
-      passengerName: ride.passengerName,
-      createdAt: Timestamp.now()
-    });
+      createdAt: Timestamp.now(),
+      ...(ride.pickupAddr ? { pickupAddr: ride.pickupAddr } : {}),
+      ...(ride.dropAddr ? { dropAddr: ride.dropAddr } : {}),
+      ...(cancelledBy ? { cancelledBy } : {}),
+      ...(ride.driverId || currentUserId ? { driverId: ride.driverId || currentUserId } : {}),
+      ...(ride.driverName || driverName ? { driverName: ride.driverName || driverName } : {}),
+      ...(ride.passengerId ? { passengerId: ride.passengerId } : {}),
+      ...(ride.passengerName ? { passengerName: ride.passengerName } : {}),
+      ...(ride.earnBookedByUserId ? { earnBookedByUserId: ride.earnBookedByUserId } : {}),
+      ...(ride.earnBookedByName ? { earnBookedByName: ride.earnBookedByName } : {}),
+      ...(ride.earnBookedByEmail ? { earnBookedByEmail: ride.earnBookedByEmail } : {}),
+      ...(ride.earnPassengerName ? { earnPassengerName: ride.earnPassengerName } : {}),
+      ...(ride.earnPassengerPhone ? { earnPassengerPhone: ride.earnPassengerPhone } : {}),
+      ...(ride.earnPassengerEmail ? { earnPassengerEmail: ride.earnPassengerEmail } : {}),
+    };
+
+    await addDoc(collection(db, 'rideHistory'), historyPayload);
+  };
+
+  const uploadDriverPhoto = async (uri: string) => {
+    try {
+      Alert.alert("Uploading", "Please wait while we upload your photo...");
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const photoRef = ref(storage, `driver_photos/${auth.currentUser?.uid}/${Date.now()}.jpg`);
+      
+      await uploadBytes(photoRef, blob);
+      const downloadUrl = await getDownloadURL(photoRef);
+      
+      setDriverPhotoUrl(downloadUrl);
+      Alert.alert("Success", "Photo uploaded successfully!");
+      return downloadUrl;
+    } catch (error) {
+      console.error("Photo upload error:", error);
+      Alert.alert("Error", "Failed to upload photo. Please try again.");
+      return null;
+    }
+  };
+
+  const pickDriverPhoto = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        const uri = result.assets[0].uri;
+        setDriverPhotoUri(uri);
+        await uploadDriverPhoto(uri);
+      }
+    } catch (error) {
+      console.error("Photo picker error:", error);
+      Alert.alert("Error", "Failed to pick photo");
+    }
   };
 
   const acceptRide = async (ride: Ride) => {
@@ -1508,31 +1920,65 @@ export default function App() {
       return Alert.alert("Access Denied", "Your account is currently restricted.");
     }
     if (!driverPhone || !vehiclePlate) return setIsIdentitySet(false);
-    await updateDoc(doc(db, 'rides', ride.id!), {
+    const updatePayload: any = {
       status: 'accepted', driverId: auth.currentUser?.uid,
       driverPhone: driverPhone, driverName: driverName, vehiclePlate: vehiclePlate,
       ...(ride.type === 'ShareAuto'
         ? { shareAutoPickupCompletedIds: [], shareAutoDropCompletedIds: [] }
         : {})
+    };
+    
+    if (driverPhotoUrl) {
+      updatePayload.driverPhotoUrl = driverPhotoUrl;
+    }
+    
+    await updateDoc(doc(db, 'rides', ride.id!), updatePayload);
+    setCurrentRide({
+      ...ride,
+      status: 'accepted',
+      driverId: auth.currentUser?.uid || ride.driverId || null,
+      driverPhone,
+      driverName,
+      vehiclePlate,
+      driverPhotoUrl: driverPhotoUrl || undefined,
     });
-    setCurrentRide(ride);
   };
 
   const cancelRide = async (id: string, isDriver: boolean, reason?: string) => {
     if (isDriver) {
         Alert.alert(
             "Warning", 
-            "Cancelling after accepting hurts our community.",
+        "Cancelling after accepting will cancel this ride for the passenger. Continue?",
             [
                 { text: "Go Back", style: "cancel" },
                 { text: "Confirm Cancel", style: "destructive", onPress: async () => {
-                  const rideRef = doc(db, 'rides', id);
-                  const rideSnap = await getDoc(rideRef);
-                  if (rideSnap.exists()) {
-                    const rideData = { id: rideSnap.id, ...rideSnap.data() } as Ride;
-                    await addRideHistoryEntry(rideData, 'cancelled', 'DRIVER');
+                  if (!id) {
+                    Alert.alert('Unassign failed', 'Trip id is missing. Please refresh and try again.');
+                    return;
                   }
-                    await updateDoc(doc(db, 'rides', id), { status: 'waiting', driverId: null, driverPhone: '', vehiclePlate: '' });
+
+                  try {
+                    const rideRef = doc(db, 'rides', id);
+                    const rideSnap = await getDoc(rideRef);
+                    if (rideSnap.exists()) {
+                      const rideData = { id: rideSnap.id, ...rideSnap.data() } as Ride;
+                      try {
+                        await addRideHistoryEntry(rideData, 'cancelled', 'DRIVER');
+                      } catch {
+                        // Keep cancellation functional even if history logging fails.
+                      }
+                    }
+
+                    await updateDoc(rideRef, {
+                      status: 'waiting',
+                      cancelledBy: deleteField(),
+                      driverId: null,
+                      driverPhone: '',
+                      driverName: '',
+                      vehiclePlate: '',
+                      driverLocation: deleteField()
+                    });
+
                     setCurrentRide(null);
                     const newHistory = [...driverStats.cancelHistory, Date.now()];
                     let isPerm = driverStats.isPermanentlySuspended;
@@ -1541,6 +1987,9 @@ export default function App() {
                     }
                     setDriverStats(prev => ({ ...prev, cancelled: prev.cancelled + 1, cancelHistory: newHistory, isPermanentlySuspended: isPerm }));
                     setShowDetails(false);
+                  } catch {
+                    Alert.alert('Cancel failed', 'Could not cancel this trip right now. Please try again.');
+                  }
                 }}
             ]
         );
@@ -1553,6 +2002,29 @@ export default function App() {
           const rideSnap = await getDoc(rideRef);
           if (rideSnap.exists()) {
             const rideData = { id: rideSnap.id, ...rideSnap.data() } as Ride;
+            if (rideData.comboMode === 'PARCEL_PLUS_BIKE' && rideData.comboParcelSenderId === currentUserId) {
+              await updateDoc(rideRef, {
+                comboMode: deleteField(),
+                comboParcelSenderId: deleteField(),
+                comboParcelSenderName: deleteField(),
+                comboParcelSenderPhone: deleteField(),
+                comboParcelPickup: deleteField(),
+                comboParcelDrop: deleteField(),
+                comboParcelPickupAddr: deleteField(),
+                comboParcelDropAddr: deleteField(),
+                comboParcelDistance: deleteField(),
+                comboParcelFare: deleteField(),
+                comboParcelEncryptedOTP: deleteField(),
+                comboTotalFare: deleteField(),
+                comboTotalDistance: deleteField(),
+                comboStage: deleteField(),
+              });
+              setUserBookedRide(null);
+              setDestCoords(null);
+              setShowDetails(false);
+              setShowTipModal(false);
+              return;
+            }
             try {
               await addRideHistoryEntry(rideData, 'cancelled', 'PASSENGER');
             } catch {
@@ -1588,6 +2060,28 @@ export default function App() {
     });
 
     return () => subscription.remove();
+  }, [mode, userBookedRide?.id, userBookedRide?.status]);
+
+  useEffect(() => {
+    if (mode !== 'USER') {
+      lastUserRideStateRef.current = null;
+      return;
+    }
+
+    const prev = lastUserRideStateRef.current;
+    if (
+      prev?.id &&
+      userBookedRide?.id &&
+      prev.id === userBookedRide.id &&
+      prev.status === 'accepted' &&
+      userBookedRide.status === 'waiting'
+    ) {
+      Alert.alert('Ride update', 'sorry driver cancelled your ride let me search new driver');
+    }
+
+    lastUserRideStateRef.current = userBookedRide?.id
+      ? { id: userBookedRide.id, status: userBookedRide.status }
+      : null;
   }, [mode, userBookedRide?.id, userBookedRide?.status]);
 
   const openGoogleMaps = (lat: number, lon: number, label: string) => {
@@ -1661,6 +2155,7 @@ export default function App() {
 
   const getCurrentUserRideOtp = (ride: Ride | null) => {
     if (!ride) return '';
+    if (isComboParcelSender(ride)) return decryptOTP(ride.comboParcelEncryptedOTP || ride.encryptedOTP);
     return getSharePassengerOtpById(ride, currentUserId);
   };
 
@@ -1701,6 +2196,7 @@ export default function App() {
     if (completedDrops.length >= allPassengerCount && allPassengerCount > 0) {
       const totalShareFare = (currentRide.shareAutoPassengerFares || []).reduce((sum, x) => sum + x, 0) || currentRide.fare;
       await addRideHistoryEntry(currentRide, 'completed');
+      await creditEarnRewardIfEligible(currentRide);
       setDriverStats(prev => ({ ...prev, completed: prev.completed + 1, earnings: prev.earnings + totalShareFare }));
       await deleteDoc(doc(db, 'rides', currentRide.id));
       setCurrentRide(null);
@@ -1713,29 +2209,35 @@ export default function App() {
   };
 
   const handleAuth = async () => {
-    if (!isSignup) {
-      await signInWithEmailAndPassword(auth, email, password);
-      return;
-    }
+    try {
+      if (!isSignup) {
+        await signInWithEmailAndPassword(auth, email.trim(), password);
+        return;
+      }
 
-    if (!fullName.trim()) {
-      Alert.alert('Required', 'Please enter your full name.');
-      return;
-    }
-    if (!isValidMobile(mobileNumber)) {
-      Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
-      return;
-    }
+      if (!fullName.trim()) {
+        Alert.alert('Required', 'Please enter your full name.');
+        return;
+      }
+      if (!isValidMobile(mobileNumber)) {
+        Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
+        return;
+      }
 
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    await setDoc(doc(db, 'users', cred.user.uid), {
-      name: fullName.trim(),
-      phone: mobileNumber,
-      email: email.trim(),
-      createdAt: Timestamp.now()
-    });
-    setProfileName(fullName.trim());
-    setProfilePhone(mobileNumber);
+      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      await setDoc(doc(db, 'users', cred.user.uid), {
+        name: fullName.trim(),
+        phone: mobileNumber,
+        email: email.trim(),
+        earnWallet: 0,
+        createdAt: Timestamp.now()
+      });
+      setProfileName(fullName.trim());
+      setProfilePhone(mobileNumber);
+    } catch (error: any) {
+      const message = error?.message || 'Could not complete authentication. Please try again.';
+      Alert.alert('Authentication failed', message);
+    }
   };
 
   if (!loggedIn) {
@@ -1760,7 +2262,7 @@ export default function App() {
           !userBookedRide ? (
             <MapView 
               ref={mapRef}
-              style={styles.map} provider={PROVIDER_GOOGLE} 
+              style={styles.map}
               onPress={(e) => {
                 const point = e.nativeEvent.coordinate;
                 if (!isWithinHyderabadService(point)) {
@@ -1771,7 +2273,7 @@ export default function App() {
                 setDestCoords(point);
                 setDestination("Dropped Pin");
               }}
-              initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : undefined}
+              initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : DEFAULT_MAP_REGION}
             >
               {pickupCoords && <Marker coordinate={pickupCoords} title="Pickup" pinColor="blue" />}
               {destCoords && <Marker coordinate={destCoords} title="Drop" />}
@@ -1781,11 +2283,10 @@ export default function App() {
               <MapView
                 ref={mapRef}
                 style={styles.map}
-                provider={PROVIDER_GOOGLE}
-                initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : undefined}
+                initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : DEFAULT_MAP_REGION}
               >
-                <Marker coordinate={userBookedRide.pickup} title="Pickup" pinColor="blue" />
-                <Marker coordinate={userBookedRide.drop} title="Drop" />
+                <Marker coordinate={getUserPerspectivePickup(userBookedRide) || userBookedRide.pickup} title="Pickup" pinColor="blue" />
+                <Marker coordinate={getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop} title="Drop" />
                 {userBookedRide.driverLocation && (
                   <Marker coordinate={userBookedRide.driverLocation} title="Driver" description={userBookedRide.driverName || 'Driver'}>
                     <Text style={{fontSize: 28}}>{icons[userBookedRide.type]}</Text>
@@ -1795,7 +2296,7 @@ export default function App() {
             ) : (
               <View style={styles.loyaltyBackground}>
                   <Animated.Text style={[styles.loyaltyIcon, { transform: [{ scale: searchAnim }] }]}>🔍</Animated.Text>
-                 <Text style={styles.loyaltyTitle}>Finding your {userBookedRide.type}...</Text>
+                 <Text style={styles.loyaltyTitle}>Finding your {getUserRideLabel(userBookedRide)}...</Text>
                  <View style={styles.loyaltyCard}>
                     <Text style={styles.loyaltyText}>✅ <Text style={{fontWeight:'bold'}}>Low Prices:</Text> We keep it affordable every day.</Text>
                     <Text style={styles.loyaltyText}>⚡ <Text style={{fontWeight:'bold'}}>Quick Rides:</Text> Drivers are nearby and ready.</Text>
@@ -1865,7 +2366,7 @@ export default function App() {
           </View>
       )}
       
-      {mode === 'USER' && !!location && (
+      {mode === 'USER' && !!location && !userBookedRide && (
         <Pressable style={styles.currentLocFab} onPress={focusOnCurrentLocation}>
           <Text style={styles.currentLocFabText}>⌖</Text>
         </Pressable>
@@ -1887,22 +2388,42 @@ export default function App() {
               <>
                 <TextInput style={styles.input} placeholder="Pickup Area" value={pickupInput} onChangeText={setPickupInput} onSubmitEditing={() => handleSearch('pickup')} />
                 <TextInput style={styles.input} placeholder="Drop Area" value={destination} onChangeText={setDestination} onSubmitEditing={() => handleSearch('drop')} />
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 10}}>
-                  {(['Bike', 'Auto', 'Cab', 'ShareAuto'] as RideType[]).map(r => (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
+                  {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (
                     <Pressable
                       key={r}
-                      style={[styles.rideCard, r === 'ShareAuto' && styles.shareRideCard, selectedRide === r && styles.selected]}
+                      style={[
+                        styles.rideCard,
+                        r === 'ShareAuto' && styles.shareRideCard,
+                        r === 'Parcel' && styles.parcelRideCard,
+                        selectedRide === r && styles.selected,
+                      ]}
                       onPress={() => {
                         playUiTapSound('vehicle');
                         setSelectedRide(r);
                       }}
                     >
                       {r === 'ShareAuto' && <Text style={styles.shareAttractLabel}>SAVE MONEY</Text>}
+                      {r === 'Parcel' && <Text style={styles.parcelAttractLabel}>DELIVERY</Text>}
                       <Text style={{fontSize: 24}}>{icons[r]}</Text>
                       <Text style={{fontWeight:'bold'}}>₹{fares[r]}</Text>
-                      <Text style={{fontSize: 10}}>{r}</Text>
+                      <Text style={{fontSize: 10}}>{r === 'Parcel' ? 'Parcel' : r}</Text>
+                      {r === 'Parcel' && <Text style={styles.parcelCardHint}>Small parcels only</Text>}
                     </Pressable>
                   ))}
+                  <Pressable
+                    style={[styles.rideCard, styles.earnRideCard]}
+                    onPress={() => {
+                      playUiTapSound('vehicle');
+                      openEarnPage();
+                    }}
+                  >
+                    <Text style={styles.earnAttractLabel}>EARN</Text>
+                    <Text style={{fontSize: 24}}>💸</Text>
+                    <Text style={{fontWeight:'bold'}}>₹5</Text>
+                    <Text style={{fontSize: 10}}>Earn</Text>
+                    <Text style={styles.earnCardHint}>Book for others</Text>
+                  </Pressable>
                 </ScrollView>
                 <Pressable
                   style={styles.primaryButton}
@@ -1920,6 +2441,13 @@ export default function App() {
                   <View style={styles.driverArrivingCard}>
                     <Text style={styles.driverNameText}>{userBookedRide.driverName} is coming</Text>
                     <Text style={{color:'#8E8E93', marginBottom:10}}>{userBookedRide.vehiclePlate}</Text>
+                    
+                    {userBookedRide.driverPhotoUrl && (
+                      <View style={{width: 80, height: 80, borderRadius: 40, marginBottom: 10, overflow: 'hidden', borderWidth: 2, borderColor: '#007AFF'}}>
+                        <Image source={{ uri: userBookedRide.driverPhotoUrl }} style={{width: '100%', height: '100%'}} />
+                      </View>
+                    )}
+                    
                     <Text style={{fontWeight:'700'}}>{userBookedRide.driverName || 'Driver'} • {userBookedRide.driverPhone || 'N/A'}</Text>
                     {!!userBookedRide.driverPhone && (
                       <Pressable style={styles.callBtn} onPress={() => openDialPad(userBookedRide.driverPhone)}>
@@ -1965,7 +2493,7 @@ export default function App() {
                 ) : userBookedRide.status === 'started' ? (
                   <View style={styles.driverArrivingCard}>
                     <Text style={[styles.searchingText, {color: '#34C759'}]}>🚀 Trip Started!</Text>
-                    <Pressable style={styles.navButton} onPress={() => openGoogleMaps(userBookedRide.drop.latitude, userBookedRide.drop.longitude, "Drop")}>
+                    <Pressable style={styles.navButton} onPress={() => openGoogleMaps((getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop).latitude, (getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop).longitude, "Drop")}>
                         <Text style={styles.navButtonText}>Navigate Route</Text>
                     </Pressable>
                   </View>
@@ -2020,6 +2548,23 @@ export default function App() {
                     <TextInput style={styles.input} placeholder="Full Name" value={driverName} onChangeText={setDriverName} />
                     <TextInput style={styles.input} placeholder="Phone" value={driverPhone} onChangeText={setDriverPhone} keyboardType="phone-pad" />
                     <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={setVehiclePlate} />
+                    
+                    <View style={{marginVertical: 12, alignItems: 'center'}}>
+                      <Text style={{fontSize: 12, color: '#666', marginBottom: 8}}>Driver Photo (Optional)</Text>
+                      {driverPhotoUri ? (
+                        <View style={{width: 100, height: 100, borderRadius: 50, marginBottom: 10, overflow: 'hidden', borderWidth: 2, borderColor: '#007AFF'}}>
+                          <Image source={{ uri: driverPhotoUri }} style={{width: '100%', height: '100%'}} />
+                        </View>
+                      ) : (
+                        <View style={{width: 100, height: 100, borderRadius: 50, marginBottom: 10, backgroundColor: '#E8E8E8', justifyContent: 'center', alignItems: 'center'}}>
+                          <Text style={{fontSize: 40}}>📷</Text>
+                        </View>
+                      )}
+                      <Pressable style={[styles.primaryButton, {marginBottom: 10, backgroundColor: '#34C759'}]} onPress={pickDriverPhoto}>
+                        <Text style={styles.buttonText}>{driverPhotoUrl ? '✓ Photo Uploaded' : 'Upload Photo'}</Text>
+                      </Pressable>
+                    </View>
+                    
                     <Pressable style={styles.primaryButton} onPress={() => (driverPhone && vehiclePlate && driverName) ? setIsIdentitySet(true) : Alert.alert("Required", "Fill all details")}><Text style={styles.buttonText}>Go Online</Text></Pressable>
                 </View>
             ) : currentRide ? (
@@ -2027,7 +2572,53 @@ export default function App() {
                 <Text style={styles.sectionTitle}>{currentRide.status === 'started' ? "Trip On" : "New Job"}</Text>
                 {currentRide.status === 'accepted' ? (
                   <>
-                    {currentRide.type === 'ShareAuto' && (currentRide.shareAutoPassengerIds?.length || 0) > 1 ? (() => {
+                    {currentRide.comboMode === 'PARCEL_PLUS_BIKE' && (
+                      <View style={styles.shareDriverFlowCard}>
+                        <Text style={styles.shareDriverFlowTitle}>Combo Job: Delivery + Passenger</Text>
+                        <Text style={styles.shareDriverFlowSub}>Total earning: ₹{currentRide.comboTotalFare || ((currentRide.comboParcelFare || 0) + currentRide.fare)}</Text>
+                        <Text style={styles.shareDriverTaskMeta}>
+                          {(currentRide.comboStage || 'parcel_pickup') === 'parcel_pickup' ? 'Step 1/4: Pickup Parcel' :
+                           (currentRide.comboStage || 'parcel_pickup') === 'passenger_pickup' ? 'Step 2/4: Pickup Passenger' :
+                           (currentRide.comboStage || 'parcel_pickup') === 'passenger_drop' ? 'Step 3/4: Drop Passenger' :
+                           'Step 4/4: Drop Parcel'}
+                        </Text>
+
+                        {(currentRide.comboStage || 'parcel_pickup') === 'parcel_pickup' && (
+                          <>
+                            <Pressable style={styles.navButton} onPress={() => openGoogleMaps((currentRide.comboParcelPickup || currentRide.pickup).latitude, (currentRide.comboParcelPickup || currentRide.pickup).longitude, 'Parcel Pickup')}>
+                              <Text style={styles.navButtonText}>📦 Go to Parcel Pickup</Text>
+                            </Pressable>
+                            <TextInput style={styles.input} placeholder="Enter Parcel OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
+                            <Pressable style={styles.primaryButton} onPress={async () => {
+                              const expected = decryptOTP(currentRide.comboParcelEncryptedOTP || currentRide.encryptedOTP);
+                              if (otpInput.trim() !== expected) return Alert.alert('Error', 'Invalid parcel OTP');
+                              await updateDoc(doc(db, 'rides', currentRide.id!), { comboStage: 'passenger_pickup' });
+                              setOtpInput('');
+                            }}>
+                              <Text style={styles.buttonText}>Confirm Parcel Pickup</Text>
+                            </Pressable>
+                          </>
+                        )}
+
+                        {(currentRide.comboStage || 'parcel_pickup') === 'passenger_pickup' && (
+                          <>
+                            <Pressable style={styles.navButton} onPress={() => openGoogleMaps(currentRide.pickup.latitude, currentRide.pickup.longitude, 'Passenger Pickup')}>
+                              <Text style={styles.navButtonText}>👤 Go to Passenger Pickup</Text>
+                            </Pressable>
+                            <TextInput style={styles.input} placeholder="Enter Passenger OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
+                            <Pressable style={styles.primaryButton} onPress={async () => {
+                              if (decryptOTP(currentRide.encryptedOTP) !== otpInput.trim()) return Alert.alert('Error', 'Invalid passenger OTP');
+                              await updateDoc(doc(db, 'rides', currentRide.id!), { comboStage: 'passenger_drop', status: 'started' });
+                              setOtpInput('');
+                            }}>
+                              <Text style={styles.buttonText}>Confirm Passenger Pickup</Text>
+                            </Pressable>
+                          </>
+                        )}
+                      </View>
+                    )}
+
+                    {currentRide.comboMode !== 'PARCEL_PLUS_BIKE' && currentRide.type === 'ShareAuto' && (currentRide.shareAutoPassengerIds?.length || 0) > 1 ? (() => {
                       const passengerCount = currentRide.shareAutoPassengerIds?.length || 0;
                       const pickupDone = currentRide.shareAutoPickupCompletedIds || [];
                       const dropDone = currentRide.shareAutoDropCompletedIds || [];
@@ -2107,7 +2698,7 @@ export default function App() {
                         )}
                       </View>
                     )}
-                    {!(currentRide.type === 'ShareAuto' && (currentRide.shareAutoPassengerIds?.length || 0) > 1) && (
+                    {currentRide.comboMode !== 'PARCEL_PLUS_BIKE' && !(currentRide.type === 'ShareAuto' && (currentRide.shareAutoPassengerIds?.length || 0) > 1) && (
                       <>
                         <Pressable style={styles.navButton} onPress={() => openGoogleMaps(currentRide.pickup.latitude, currentRide.pickup.longitude, "Pickup")}><Text style={styles.navButtonText}>📍 Go to Pickup</Text></Pressable>
                         <TextInput style={styles.input} placeholder="Enter OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
@@ -2122,15 +2713,45 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <Pressable style={[styles.navButton, {backgroundColor: '#34C759'}]} onPress={() => openGoogleMaps(currentRide.drop.latitude, currentRide.drop.longitude, "Dropoff")}><Text style={styles.navButtonText}>🏁 Go to Destination</Text></Pressable>
-                    <Pressable style={styles.cancelButton} onPress={async () => {
-                        if (calcDist(location!, currentRide.drop) < 0.5) {
-                            await addRideHistoryEntry(currentRide, 'completed');
-                            setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + currentRide.fare}));
-                            await deleteDoc(doc(db, 'rides', currentRide.id!));
-                            setCurrentRide(null);
-                        } else Alert.alert("Notice", "Arrive first");
-                    }}><Text style={styles.buttonText}>Complete</Text></Pressable>
+                    {currentRide.comboMode === 'PARCEL_PLUS_BIKE' ? (
+                      <>
+                        {(currentRide.comboStage || 'passenger_drop') === 'passenger_drop' ? (
+                          <>
+                            <Pressable style={[styles.navButton, {backgroundColor: '#34C759'}]} onPress={() => openGoogleMaps(currentRide.drop.latitude, currentRide.drop.longitude, 'Passenger Drop')}><Text style={styles.navButtonText}>🏁 Go to Passenger Drop</Text></Pressable>
+                            <Pressable style={styles.primaryButton} onPress={async () => {
+                              await updateDoc(doc(db, 'rides', currentRide.id!), { comboStage: 'parcel_drop' });
+                            }}><Text style={styles.buttonText}>Confirm Passenger Drop</Text></Pressable>
+                          </>
+                        ) : (
+                          <>
+                            <Pressable style={[styles.navButton, {backgroundColor: '#34C759'}]} onPress={() => openGoogleMaps((currentRide.comboParcelDrop || currentRide.drop).latitude, (currentRide.comboParcelDrop || currentRide.drop).longitude, 'Parcel Drop')}><Text style={styles.navButtonText}>📦 Go to Parcel Drop</Text></Pressable>
+                            <Pressable style={styles.cancelButton} onPress={async () => {
+                                const finalDrop = currentRide.comboParcelDrop || currentRide.drop;
+                              if (location && calcDist(location, finalDrop) <= 1) {
+                                    await addRideHistoryEntry(currentRide, 'completed');
+                                await creditEarnRewardIfEligible(currentRide);
+                                    setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + (currentRide.comboTotalFare || ((currentRide.comboParcelFare || 0) + currentRide.fare))}));
+                                    await deleteDoc(doc(db, 'rides', currentRide.id!));
+                                    setCurrentRide(null);
+                              } else Alert.alert('Notice', 'Arrive within 1 km of parcel drop first');
+                            }}><Text style={styles.buttonText}>Complete Combo Job</Text></Pressable>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <Pressable style={[styles.navButton, {backgroundColor: '#34C759'}]} onPress={() => openGoogleMaps(currentRide.drop.latitude, currentRide.drop.longitude, "Dropoff")}><Text style={styles.navButtonText}>🏁 Go to Destination</Text></Pressable>
+                        <Pressable style={styles.cancelButton} onPress={async () => {
+                          if (location && calcDist(location, currentRide.drop) <= 1) {
+                                await addRideHistoryEntry(currentRide, 'completed');
+                            await creditEarnRewardIfEligible(currentRide);
+                                setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + currentRide.fare}));
+                                await deleteDoc(doc(db, 'rides', currentRide.id!));
+                                setCurrentRide(null);
+                          } else Alert.alert("Notice", "Arrive within 1 km of destination first");
+                        }}><Text style={styles.buttonText}>Complete</Text></Pressable>
+                      </>
+                    )}
                   </>
                 )}
                 <Pressable style={styles.chatButton} onPress={() => setChatOpen(true)}>
@@ -2157,9 +2778,24 @@ export default function App() {
                       <View style={styles.notifHeader}>
                         <Text style={{fontSize: 28}}>{icons[r.type]}</Text>
                         <View style={{flex: 1, marginLeft: 10}}>
-                          <Text style={styles.highlightPrice}>₹{r.fare} {r.tip > 0 && `(+₹${r.tip})`}</Text>
-                          <Text style={{color:'#8E8E93', fontSize: 12}}>{r.distance.toFixed(1)} km ride</Text>
+                          <Text style={styles.highlightPrice}>₹{r.comboMode === 'PARCEL_PLUS_BIKE' ? (r.comboTotalFare || ((r.comboParcelFare || 0) + r.fare)) : r.fare} {r.tip > 0 && `(+₹${r.tip})`}</Text>
+                          <Text style={{color:'#8E8E93', fontSize: 12}}>{r.comboMode === 'PARCEL_PLUS_BIKE' ? `${(r.comboTotalDistance || r.distance).toFixed(1)} km combo` : (r.type === 'Parcel' ? `${r.distance.toFixed(1)} km delivery` : `${r.distance.toFixed(1)} km ride`)}</Text>
                           <Text style={styles.routeText}>{r.pickupAddr || 'Pickup'} ➔ {r.dropAddr || 'Drop'}</Text>
+                          {r.comboMode === 'PARCEL_PLUS_BIKE' && (
+                            <View style={styles.parcelSingleNotifCard}>
+                              <Text style={styles.parcelSingleNotifTitle}>COMBO • Delivery + Passenger Ride</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Parcel: {(r.comboParcelPickupAddr || 'Parcel Pickup')} ➔ {(r.comboParcelDropAddr || 'Parcel Drop')}</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Passenger: {(r.pickupAddr || 'Passenger Pickup')} ➔ {(r.dropAddr || 'Passenger Drop')}</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Flow: parcel pickup ➔ passenger pickup ➔ passenger drop ➔ parcel drop</Text>
+                            </View>
+                          )}
+                          {r.type === 'Parcel' && (
+                            <View style={styles.parcelSingleNotifCard}>
+                              <Text style={styles.parcelSingleNotifTitle}>Parcel delivery request</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Bike drivers only • not a ride</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Small hands-carry parcel delivery</Text>
+                            </View>
+                          )}
                           {r.type === 'ShareAuto' && (
                             <>
                               {(() => {
@@ -2199,15 +2835,15 @@ export default function App() {
             <ScrollView style={{maxHeight: 500}}>
                 <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>From:</Text>
-                    <Text style={styles.valText}>{(mode === 'USER' ? userBookedRide?.pickupAddr : currentRide?.pickupAddr) || 'N/A'}</Text>
+                  <Text style={styles.valText}>{mode === 'USER' ? getUserPerspectivePickupAddr(userBookedRide) : (currentRide?.pickupAddr || 'N/A')}</Text>
                 </View>
                 <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>To:</Text>
-                    <Text style={styles.valText}>{(mode === 'USER' ? userBookedRide?.dropAddr : currentRide?.dropAddr) || 'N/A'}</Text>
+                  <Text style={styles.valText}>{mode === 'USER' ? getUserPerspectiveDropAddr(userBookedRide) : (currentRide?.dropAddr || 'N/A')}</Text>
                 </View>
                 <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Final Fare:</Text>
-                    <Text style={[styles.valText, {color:'#34C759', fontWeight:'bold'}]}>₹{mode === 'USER' ? userBookedRide?.fare : currentRide?.fare}</Text>
+                  <Text style={[styles.valText, {color:'#34C759', fontWeight:'bold'}]}>₹{mode === 'USER' ? getUserPerspectiveFare(userBookedRide) : currentRide?.fare}</Text>
                 </View>
 
                 {mode === 'USER' && userBookedRide && (
@@ -2260,6 +2896,91 @@ export default function App() {
             ))}</View>
             <Pressable style={styles.cancelButton} onPress={() => { setShowTipModal(false); cancelRide(userBookedRide?.id!, false); }}><Text style={styles.buttonText}>Cancel Request</Text></Pressable>
         </View></View>
+      </Modal>
+
+      {/* PARCEL TERMS */}
+      <Modal visible={showParcelTerms} transparent animationType="slide" onRequestClose={() => setShowParcelTerms(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.detailsModal}>
+            <Text style={styles.modalTitle}>Parcel Delivery</Text>
+            <View style={styles.parcelTermsCard}>
+              <Text style={styles.parcelTermsHeading}>Please read before sending</Text>
+              <Text style={styles.termsPoint}>This is for small parcels only, something you can carry by hand.</Text>
+              <Text style={styles.termsPoint}>Bike drivers will see this as a parcel delivery request, not a ride.</Text>
+              <Text style={[styles.termsPoint, { color: '#A43412', fontWeight: '900' }]}>Alcoholic compounds, drugs, valuable things (gold ornaments), etc are strictly prohibited, driver checks it before taking, please cooperate us.</Text>
+            </View>
+            <Pressable style={styles.primaryButton} onPress={async () => { setShowParcelTerms(false); await bookRide('Parcel'); }}>
+              <Text style={styles.buttonText}>Agree and Continue</Text>
+            </Pressable>
+            <Pressable onPress={() => setShowParcelTerms(false)} style={{marginTop: 12, alignSelf:'center'}}>
+              <Text style={{color: '#007AFF', fontWeight:'bold'}}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showEarnPage} animationType="slide" onRequestClose={() => setShowEarnPage(false)}>
+        <View style={styles.earnPageWrap}>
+          <View style={styles.earnPageHeader}>
+            <Pressable onPress={() => setShowEarnPage(false)}>
+              <Text style={styles.earnPageBack}>Back</Text>
+            </Pressable>
+            <Text style={styles.earnPageTitle}>Earn</Text>
+            <View style={{ width: 42 }} />
+          </View>
+
+          <ScrollView contentContainerStyle={styles.earnPageContent}>
+            <View style={styles.earnSummaryCard}>
+              <Text style={styles.earnSummaryLabel}>Earned Amount</Text>
+              <Text style={styles.earnSummaryValue}>₹{profileEarnWallet}</Text>
+              <Text style={styles.earnSummaryHint}>You get ₹{EARN_REWARD_AMOUNT} when a booked ride is completed and fare is above ₹{EARN_REWARD_MIN_FARE}.</Text>
+            </View>
+
+            <Text style={styles.earnSectionTitle}>Passenger Data</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Passenger Name"
+              value={earnPassengerName}
+              onChangeText={setEarnPassengerName}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Passenger Mobile Number"
+              value={earnPassengerPhone}
+              onChangeText={(v) => setEarnPassengerPhone(v.replace(/\D/g, '').slice(0, 10))}
+              keyboardType="phone-pad"
+              maxLength={10}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Passenger Email"
+              value={earnPassengerEmail}
+              onChangeText={setEarnPassengerEmail}
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.earnSectionTitle}>Select Ride Type</Text>
+            <View style={styles.rideChoiceGrid}>
+              {(['Bike', 'Auto', 'Cab'] as const).map((type) => (
+                <Pressable
+                  key={type}
+                  style={[styles.rideSelectCard, earnRideType === type && styles.selected]}
+                  onPress={() => setEarnRideType(type)}
+                >
+                  <Text style={{fontSize: 24}}>{icons[type]}</Text>
+                  <Text style={{fontWeight:'bold'}}>₹{fares[type]}</Text>
+                  <Text style={{fontSize: 10}}>{type}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+
+          <View style={styles.earnFooter}>
+            <Pressable style={styles.primaryButton} onPress={bookEarnRide}>
+              <Text style={styles.buttonText}>Book</Text>
+            </Pressable>
+          </View>
+        </View>
       </Modal>
 
       {/* SHARE AUTO TERMS */}
@@ -2519,6 +3240,14 @@ export default function App() {
   );
 }
 
+export default function App() {
+  return (
+    <AppErrorBoundary>
+      <RideAppScreen />
+    </AppErrorBoundary>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFF' },
   map: { flex: 1 },
@@ -2549,8 +3278,16 @@ const styles = StyleSheet.create({
   cancelButton: { backgroundColor: '#FF3B30', padding: 12, borderRadius: 12, alignItems: 'center', marginTop: 10 },
   buttonText: { color: 'white', fontWeight: 'bold' },
   rideCard: { width: 85, padding: 10, backgroundColor: '#fff', marginRight: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E5E5EA' },
+  rideChoiceGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 10 },
+  rideSelectCard: { width: '31%', padding: 10, backgroundColor: '#fff', marginBottom: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E5E5EA' },
   shareRideCard: { borderColor: '#D9A600', backgroundColor: '#FFF1B8', borderWidth: 2, shadowColor: '#B88900', shadowOpacity: 0.24, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 5 },
+  parcelRideCard: { borderColor: '#1B5E20', backgroundColor: '#EAF8EE', borderWidth: 2, shadowColor: '#1B5E20', shadowOpacity: 0.16, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  earnRideCard: { borderColor: '#B45309', backgroundColor: '#FFF3D6', borderWidth: 2, shadowColor: '#B45309', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   shareAttractLabel: { position: 'absolute', top: -8, backgroundColor: '#E8B400', color: '#3F2C00', fontSize: 9, fontWeight: '900', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#9A7400' },
+  parcelAttractLabel: { position: 'absolute', top: -8, backgroundColor: '#1B5E20', color: '#FFFFFF', fontSize: 9, fontWeight: '900', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#0E3B13' },
+  earnAttractLabel: { position: 'absolute', top: -8, backgroundColor: '#B45309', color: '#FFFFFF', fontSize: 9, fontWeight: '900', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#7C2D12' },
+  parcelCardHint: { marginTop: 4, color: '#1B5E20', fontSize: 10, fontWeight: '700', textAlign: 'center' },
+  earnCardHint: { marginTop: 4, color: '#9A3412', fontSize: 10, fontWeight: '700', textAlign: 'center' },
   selected: { borderColor: '#007AFF', backgroundColor: '#F2F7FF', borderWidth: 2 },
   searchingText: { fontSize: 14, fontWeight: '700', color: '#007AFF', textAlign: 'center' },
   highlightPrice: { fontSize: 20, fontWeight: '900', color: '#34C759' },
@@ -2587,6 +3324,9 @@ const styles = StyleSheet.create({
   shareSingleNotifCard: { backgroundColor: '#FFF6CC', borderColor: '#E8C549', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 6 },
   shareSingleNotifTitle: { color: '#6B4E00', fontWeight: '900', marginBottom: 3 },
   shareSingleNotifMeta: { color: '#6B5A14', fontSize: 12 },
+  parcelSingleNotifCard: { backgroundColor: '#EAF8EE', borderColor: '#8BC59B', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 6 },
+  parcelSingleNotifTitle: { color: '#1B5E20', fontWeight: '900', marginBottom: 3 },
+  parcelSingleNotifMeta: { color: '#256B31', fontSize: 12 },
   notificationCard: { backgroundColor: '#fff', borderRadius: 15, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#007AFF' },
   notifHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   accButton: { flex: 2, backgroundColor: '#34C759', padding: 12, borderRadius: 10, alignItems: 'center' },
@@ -2652,7 +3392,20 @@ const styles = StyleSheet.create({
   chatSend: { backgroundColor: '#0F8A47', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 18 }
   ,yellowTermsCard: { backgroundColor: '#FFF6CC', borderWidth: 1, borderColor: '#E8C549', borderRadius: 14, padding: 12, marginBottom: 14 },
   termsHeading: { color: '#6B4E00', fontWeight: '900', marginBottom: 8 },
-  termsPoint: { color: '#5B4A17', marginBottom: 5, lineHeight: 18 }
+  termsPoint: { color: '#5B4A17', marginBottom: 5, lineHeight: 18 },
+  parcelTermsCard: { backgroundColor: '#EAF8EE', borderWidth: 1, borderColor: '#9AD7B0', borderRadius: 14, padding: 12, marginBottom: 14 },
+  parcelTermsHeading: { color: '#1B5E20', fontWeight: '900', marginBottom: 8 }
+  ,earnPageWrap: { flex: 1, backgroundColor: '#F8FAFC' },
+  earnPageHeader: { paddingTop: 54, paddingHorizontal: 16, paddingBottom: 14, backgroundColor: 'white', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  earnPageBack: { color: '#007AFF', fontWeight: '700' },
+  earnPageTitle: { fontSize: 20, fontWeight: '900', color: '#111827' },
+  earnPageContent: { padding: 16, paddingBottom: 120 },
+  earnSummaryCard: { backgroundColor: '#FFF3D6', borderWidth: 1, borderColor: '#F59E0B', borderRadius: 14, padding: 14, marginBottom: 14 },
+  earnSummaryLabel: { color: '#92400E', fontWeight: '700' },
+  earnSummaryValue: { color: '#B45309', fontWeight: '900', fontSize: 28, marginTop: 4 },
+  earnSummaryHint: { color: '#7C2D12', marginTop: 6, lineHeight: 18 },
+  earnSectionTitle: { fontSize: 16, fontWeight: '800', color: '#111827', marginTop: 8, marginBottom: 8 },
+  earnFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#E5E7EB' }
   ,shareAutoScreen: { flex: 1, backgroundColor: '#FFF6CC', alignItems: 'center', justifyContent: 'center', padding: 24 },
   shareAutoTopGlow: { position: 'absolute', top: -60, width: 220, height: 220, borderRadius: 110, backgroundColor: 'rgba(255, 220, 77, 0.35)' },
   shareAutoBadge: { backgroundColor: '#FFF0A6', color: '#7A5C00', fontWeight: '800', paddingVertical: 6, paddingHorizontal: 14, borderRadius: 999, marginBottom: 18, overflow: 'hidden' },
