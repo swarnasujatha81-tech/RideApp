@@ -318,6 +318,7 @@ function RideAppScreen() {
   const [profileName, setProfileName] = useState('');
   const [profilePhone, setProfilePhone] = useState('');
   const [profileEarnWallet, setProfileEarnWallet] = useState(0);
+  const [farePenalty, setFarePenalty] = useState(0);
   const [driverPhotoUrl, setDriverPhotoUrl] = useState('');
   const [driverPhotoUri, setDriverPhotoUri] = useState('');
 
@@ -398,6 +399,14 @@ function RideAppScreen() {
   const [showShareAutoGame, setShowShareAutoGame] = useState(false);
   const [shareAutoGamePausedByRide, setShareAutoGamePausedByRide] = useState(false);
   const [gameMode, setGameMode] = useState<'bird' | 'zombie'>('bird');
+  const [showLogoutMenu, setShowLogoutMenu] = useState(false);
+  // Close logout menu when clicking outside
+  useEffect(() => {
+    if (showLogoutMenu) {
+      const timer = setTimeout(() => setShowLogoutMenu(false), 3000); // Auto close after 3 seconds
+      return () => clearTimeout(timer);
+    }
+  }, [showLogoutMenu]);
   const [gameTimeLeft, setGameTimeLeft] = useState(45);
   const [birdHits, setBirdHits] = useState(0);
   const [zombieHits, setZombieHits] = useState(0);
@@ -442,6 +451,7 @@ function RideAppScreen() {
 
   const isValidMobile = (val: string) => /^[6-9]\d{9}$/.test(val);
   const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  const isValidVehiclePlate = (val: string) => /^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$/.test(val.toUpperCase());
 
   const getPrimaryAreaName = (address: string | undefined, fallback: string) => {
     if (!address?.trim()) return fallback;
@@ -1306,6 +1316,9 @@ function RideAppScreen() {
         const savedVehicle = await AsyncStorage.getItem('driver_vehicle');
         if (mounted && savedVehicle) setDriverVehicle(savedVehicle as RideType);
 
+        const savedFarePenalty = await AsyncStorage.getItem('fare_penalty');
+        if (mounted && savedFarePenalty) setFarePenalty(parseInt(savedFarePenalty) || 0);
+
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
           const applyResolvedLocation = (pos: Coord) => {
@@ -1815,14 +1828,14 @@ function RideAppScreen() {
     if (pickupCoords && destCoords) {
         const dist = calcDist(pickupCoords, destCoords);
         setFares({
-          Bike: getDynamicBikeFare(dist),
-          Auto: getDynamicAutoFare(dist),
-          Cab: getDynamicCabFare(dist),
-          ShareAuto: getShareAutoFare(dist, 3),
-          Parcel: getDynamicParcelFare(dist),
+          Bike: getDynamicBikeFare(dist) + farePenalty,
+          Auto: getDynamicAutoFare(dist) + farePenalty,
+          Cab: getDynamicCabFare(dist) + farePenalty,
+          ShareAuto: getShareAutoFare(dist, 3) + farePenalty,
+          Parcel: getDynamicParcelFare(dist) + farePenalty,
         });
     }
-  }, [destCoords, pickupCoords, rides]);
+  }, [destCoords, pickupCoords, rides, farePenalty]);
 
   function calcDist(a: Coord, b: Coord) {
     const R = 6371;
@@ -2430,6 +2443,11 @@ function RideAppScreen() {
           setDestCoords(null);
           setShowDetails(false);
           setShowTipModal(false);
+          
+          // Increase fare penalty for passenger cancellation
+          const newPenalty = farePenalty + 1;
+          setFarePenalty(newPenalty);
+          await AsyncStorage.setItem('fare_penalty', newPenalty.toString());
         } catch {
           Alert.alert('Cancel failed', 'Could not cancel this ride. Please try again.');
         }
@@ -2848,7 +2866,28 @@ function RideAppScreen() {
         <Pressable style={styles.badge} onPress={() => setMode(mode === 'USER' ? 'DRIVER' : 'USER')}>
           <Text style={{fontWeight:'700'}}>{mode === 'USER' ? '👤 Passenger' : `🚗 Pro Driver`}</Text>
         </Pressable>
-        {!userBookedRide && <Pressable style={styles.logout} onPress={() => signOut(auth)}><Text style={{color:'white'}}>X</Text></Pressable>}
+        <View style={{position: 'relative'}}>
+          <Pressable style={styles.logout} onPress={() => setShowLogoutMenu(!showLogoutMenu)}>
+            <Text style={{color:'white', fontSize: 18}}>⋯</Text>
+          </Pressable>
+          {showLogoutMenu && (
+            <View style={styles.logoutMenu}>
+              <Pressable style={styles.logoutMenuItem} onPress={() => {
+                setShowLogoutMenu(false);
+                Alert.alert(
+                  'Logout',
+                  `Are you sure you want to logout as ${mode === 'USER' ? 'Passenger' : 'Driver'}?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Logout', style: 'destructive', onPress: () => signOut(auth) }
+                  ]
+                );
+              }}>
+                <Text style={styles.logoutMenuText}>Logout as {mode === 'USER' ? 'Passenger' : 'Driver'}</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
       </View>
 
       {/* FIXED BOTTOM ACTION CARD - Replaced <div> with <View>  */}
@@ -3028,7 +3067,8 @@ function RideAppScreen() {
                       keyboardType="phone-pad"
                       maxLength={10}
                     />
-                    <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={setVehiclePlate} />
+                    <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={(v) => setVehiclePlate(v.toUpperCase())} autoCapitalize="characters" />
+                    <Text style={{fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10}}>Example: MH12AB1234</Text>
                     
                     <View style={{marginVertical: 12, alignItems: 'center'}}>
                       <Text style={{fontSize: 12, color: '#666', marginBottom: 8}}>Driver Photo (Optional)</Text>
@@ -3055,6 +3095,10 @@ function RideAppScreen() {
                         }
                         if (!isValidMobile(driverPhone)) {
                           Alert.alert('Invalid mobile', 'Enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9.');
+                          return;
+                        }
+                        if (!isValidVehiclePlate(vehiclePlate)) {
+                          Alert.alert('Invalid vehicle plate', 'Enter a valid Indian vehicle number plate (e.g., MH12AB1234).');
                           return;
                         }
                         setIsIdentitySet(true);
@@ -3920,6 +3964,9 @@ const styles = StyleSheet.create({
   contactTitle: { fontWeight: '800', marginBottom: 4, color: '#1B5E20' },
   contactText: { color: '#1F2937' },
   sharePassengerRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+  logoutMenu: { position: 'absolute', top: 45, right: 0, backgroundColor: 'white', borderRadius: 8, elevation: 10, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, minWidth: 150 },
+  logoutMenuItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#E5E5EA' },
+  logoutMenuText: { fontSize: 14, fontWeight: '600', color: '#FF3B30' },
   sharePassengerMeta: { color: '#4B5563', fontSize: 12 },
   shareDriverFlowCard: { backgroundColor: '#FFF6CC', borderColor: '#E8C549', borderWidth: 1, borderRadius: 14, padding: 10, marginBottom: 10, width: '100%' },
   shareDriverFlowTitle: { color: '#6B4E00', fontWeight: '900', fontSize: 15, marginBottom: 2 },
