@@ -2,7 +2,7 @@ import { Audio } from 'expo-av';
 import { addDoc, collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { db } from '../firebase';
+import { db } from '../../lib/firebase';
 
 type ChatRouteParams = {
   rideId: string;

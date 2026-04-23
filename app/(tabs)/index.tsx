@@ -25,7 +25,7 @@ import {
   FlatList,
   Image,
   Linking, Modal, Platform, Pressable, ScrollView,
-  StyleSheet, Text, TextInput, TouchableOpacity, View
+  StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import {
@@ -36,16 +36,16 @@ import {
   SURGE_SETTINGS,
   VEHICLE_DISTANCE_SLABS,
   VEHICLE_FARE_SETTINGS,
-} from '../fare-settings';
+} from '../../lib/fare-settings';
 
 /* ================= FIREBASE CONFIG ================= */
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'missing-api-key',
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'missing-auth-domain',
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'missing-project-id',
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'missing-storage-bucket',
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || 'missing-sender-id',
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || 'missing-app-id',
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -53,7 +53,6 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 const storage = getStorage(app);
 const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
-const EARN_REWARD_MIN_FARE = 120;
 const EARN_REWARD_AMOUNT = 5;
 
 type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
@@ -63,6 +62,8 @@ interface Ride {
   id?: string; type: RideType;
   fare: number; baseFare: number; tip: number; 
   distance: number; pickup: Coord; drop: Coord; encryptedOTP: string;
+  acceptedAtMs?: number;
+  pickupReachMinutes?: number;
   pickupAddr?: string; dropAddr?: string;
   passengerId?: string;
   passengerName?: string;
@@ -138,6 +139,10 @@ interface RideHistory {
   driverName?: string;
   passengerId?: string;
   passengerName?: string;
+  appFeeToApp?: number;
+  driverPayout?: number;
+  hiddenEarnSurcharge?: number;
+  pickupReachMinutes?: number;
   createdAt?: any;
 }
 
@@ -175,11 +180,77 @@ const SECRET_KEY = process.env.EXPO_PUBLIC_OTP_SECRET_KEY || '';
 const FIVE_MIN_MS = 5 * 60 * 1000;
 const HYDERABAD_CENTER: Coord = { latitude: 17.385, longitude: 78.4867 };
 const HYDERABAD_SERVICE_RADIUS_KM = 40;
+const HYDERABAD_POPULAR_AREAS = [
+  'Ameerpet',
+  'Erragadda',
+  'Miyapur',
+  'KPHB',
+  'Kukatpally',
+  'Abids',
+  'Koti',
+  'Begumpet',
+  'Panjagutta',
+  'Somajiguda',
+  'Hitech City',
+  'Madhapur',
+  'Gachibowli',
+  'Kondapur',
+  'Jubilee Hills',
+  'Banjara Hills',
+  'Secunderabad',
+  'Dilsukhnagar',
+  'LB Nagar',
+  'Uppal',
+  'Mehdipatnam',
+  'Tolichowki',
+  'Shamshabad',
+  'Nampally',
+  'Malakpet',
+  'Himayatnagar',
+  'Chikkadpally',
+  'Tarnaka',
+  'Balanagar',
+  'Moosapet'
+];
+const HYDERABAD_POPULAR_AREA_POINTS: Array<{ name: string; coord: Coord }> = [
+  { name: 'Ameerpet', coord: { latitude: 17.4375, longitude: 78.4483 } },
+  { name: 'Erragadda', coord: { latitude: 17.4583, longitude: 78.4220 } },
+  { name: 'Miyapur', coord: { latitude: 17.4960, longitude: 78.3578 } },
+  { name: 'KPHB', coord: { latitude: 17.4948, longitude: 78.3996 } },
+  { name: 'Kukatpally', coord: { latitude: 17.4850, longitude: 78.4138 } },
+  { name: 'Abids', coord: { latitude: 17.3923, longitude: 78.4761 } },
+  { name: 'Koti', coord: { latitude: 17.3850, longitude: 78.4867 } },
+  { name: 'Begumpet', coord: { latitude: 17.4447, longitude: 78.4666 } },
+  { name: 'Panjagutta', coord: { latitude: 17.4316, longitude: 78.4521 } },
+  { name: 'Somajiguda', coord: { latitude: 17.4239, longitude: 78.4632 } },
+  { name: 'Hitech City', coord: { latitude: 17.4497, longitude: 78.3824 } },
+  { name: 'Madhapur', coord: { latitude: 17.4486, longitude: 78.3915 } },
+  { name: 'Gachibowli', coord: { latitude: 17.4401, longitude: 78.3489 } },
+  { name: 'Kondapur', coord: { latitude: 17.4698, longitude: 78.3656 } },
+  { name: 'Jubilee Hills', coord: { latitude: 17.4320, longitude: 78.4070 } },
+  { name: 'Banjara Hills', coord: { latitude: 17.4126, longitude: 78.4392 } },
+  { name: 'Secunderabad', coord: { latitude: 17.4399, longitude: 78.4983 } },
+  { name: 'Dilsukhnagar', coord: { latitude: 17.3688, longitude: 78.5247 } },
+  { name: 'LB Nagar', coord: { latitude: 17.3457, longitude: 78.5522 } },
+  { name: 'Uppal', coord: { latitude: 17.4058, longitude: 78.5591 } },
+  { name: 'Mehdipatnam', coord: { latitude: 17.3950, longitude: 78.4325 } },
+  { name: 'Tolichowki', coord: { latitude: 17.3996, longitude: 78.4120 } },
+  { name: 'Shamshabad', coord: { latitude: 17.2543, longitude: 78.3996 } },
+  { name: 'Nampally', coord: { latitude: 17.3920, longitude: 78.4678 } },
+  { name: 'Malakpet', coord: { latitude: 17.3731, longitude: 78.5022 } },
+  { name: 'Himayatnagar', coord: { latitude: 17.4025, longitude: 78.4820 } },
+  { name: 'Chikkadpally', coord: { latitude: 17.4049, longitude: 78.4950 } },
+  { name: 'Tarnaka', coord: { latitude: 17.4286, longitude: 78.5382 } },
+  { name: 'Balanagar', coord: { latitude: 17.4766, longitude: 78.4486 } },
+  { name: 'Moosapet', coord: { latitude: 17.4686, longitude: 78.4302 } }
+];
 const DEFAULT_MAP_REGION = {
   ...HYDERABAD_CENTER,
   latitudeDelta: 0.05,
   longitudeDelta: 0.05,
 };
+const DRIVER_DESTINATION_MARKER_RADIUS_KM = 4.5;
+const DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT = 3;
 const DRIVER_ALERT_SOUND_URL = 'https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg';
 const CHAT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/pop.ogg';
 const VEHICLE_SELECT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg';
@@ -262,6 +333,7 @@ function RideAppScreen() {
 
   const [crewUnlockCode, setCrewUnlockCode] = useState('');
   const [location, setLocation] = useState<Coord | null>(null);
+  const [isFetchingCurrentLocation, setIsFetchingCurrentLocation] = useState(true);
   const [pickupInput, setPickupInput] = useState('Current Location');
   const [pickupCoords, setPickupCoords] = useState<Coord | null>(null);
   const [destination, setDestination] = useState('');
@@ -287,6 +359,15 @@ function RideAppScreen() {
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [driverHistory, setDriverHistory] = useState<RideHistory[]>([]);
+  const [driverPayableToApp, setDriverPayableToApp] = useState(0);
+  const [driverAvgPickupMinutes, setDriverAvgPickupMinutes] = useState(0);
+  const [driverOnline, setDriverOnline] = useState(true);
+  const [driverDestinationFilterEnabled, setDriverDestinationFilterEnabled] = useState(false);
+  const [driverDestinationMarker, setDriverDestinationMarker] = useState<Coord | null>(null);
+  const [showDriverDestinationMap, setShowDriverDestinationMap] = useState(false);
+  const [pendingDriverDestinationMarker, setPendingDriverDestinationMarker] = useState<Coord | null>(null);
+  const [driverDestinationToggleUsageCount, setDriverDestinationToggleUsageCount] = useState(0);
+  const [driverDestinationToggleUsageDate, setDriverDestinationToggleUsageDate] = useState('');
   const alertPlayingRef = useRef(false);
   const alertedRideIdsRef = useRef<Set<string>>(new Set());
   const chatLastMessageAtRef = useRef(0);
@@ -325,9 +406,127 @@ function RideAppScreen() {
 
   const currentUserId = auth.currentUser?.uid || '';
   const activeRide = mode === 'USER' ? userBookedRide : currentRide;
+  const getLocalDateKey = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = `${now.getMonth() + 1}`.padStart(2, '0');
+    const d = `${now.getDate()}`.padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+  const getDriverDestinationToggleUsageStorageKey = () => `driver_destination_toggle_usage_${currentUserId || 'guest'}`;
+  const todayDateKey = getLocalDateKey();
+  const driverDestinationToggleUsesToday = driverDestinationToggleUsageDate === todayDateKey ? driverDestinationToggleUsageCount : 0;
+  const driverDestinationToggleUsesLeft = Math.max(0, DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT - driverDestinationToggleUsesToday);
+
+  const persistDriverDestinationToggleUsage = async (nextDate: string, nextCount: number) => {
+    setDriverDestinationToggleUsageDate(nextDate);
+    setDriverDestinationToggleUsageCount(nextCount);
+    if (!currentUserId) return;
+    try {
+      await AsyncStorage.setItem(
+        getDriverDestinationToggleUsageStorageKey(),
+        JSON.stringify({ date: nextDate, count: nextCount })
+      );
+    } catch {
+      // Ignore storage errors; runtime state still enforces the limit for this session.
+    }
+  };
+
+  const canUseDriverDestinationToggleToday = () => {
+    const today = getLocalDateKey();
+    const usedToday = driverDestinationToggleUsageDate === today ? driverDestinationToggleUsageCount : 0;
+    return usedToday < DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT;
+  };
 
   const isValidMobile = (val: string) => /^[6-9]\d{9}$/.test(val);
   const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+
+  const getPrimaryAreaName = (address: string | undefined, fallback: string) => {
+    if (!address?.trim()) return fallback;
+
+    const lowerAddress = address.toLowerCase();
+    const matchedPopularArea = HYDERABAD_POPULAR_AREAS.find((area) => lowerAddress.includes(area.toLowerCase()));
+    if (matchedPopularArea) return matchedPopularArea;
+
+    const firstSegment = address
+      .split(',')
+      .map((segment) => segment.trim())
+      .find((segment) => segment.length > 0);
+
+    if (!firstSegment) return fallback;
+
+    const cleanedSegment = firstSegment
+      .replace(/\b\d{1,6}\b/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    return cleanedSegment || fallback;
+  };
+
+  const getMandalName = (address: string | undefined, fallback: string) => {
+    if (!address?.trim()) return fallback;
+
+    const parts = address
+      .split(',')
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    if (!parts.length) return fallback;
+
+    const mandalPart = parts.find((segment) => /\bmandal\b/i.test(segment));
+    if (mandalPart) return mandalPart;
+
+    // For addresses without explicit "mandal", use the second meaningful segment.
+    const secondPart = parts[1];
+    if (secondPart) return secondPart;
+
+    return fallback;
+  };
+
+  const getNearestPopularArea = (coord: Coord) => {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const distanceKm = (a: Coord, b: Coord) => {
+      const R = 6371;
+      const dLat = toRad(b.latitude - a.latitude);
+      const dLon = toRad(b.longitude - a.longitude);
+      const val =
+        (Math.sin(dLat / 2) ** 2) +
+        (Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * (Math.sin(dLon / 2) ** 2));
+      return R * 2 * Math.atan2(Math.sqrt(val), Math.sqrt(1 - val));
+    };
+
+    let nearest = HYDERABAD_POPULAR_AREA_POINTS[0];
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    HYDERABAD_POPULAR_AREA_POINTS.forEach((point) => {
+      const currentDistance = distanceKm(coord, point.coord);
+      if (currentDistance < nearestDistance) {
+        nearest = point;
+        nearestDistance = currentDistance;
+      }
+    });
+
+    return nearest?.name || 'Hyderabad';
+  };
+
+  const getAreaLabelFromCoord = async (coord: Coord, fallbackLabel: string) => {
+    try {
+      const places = await Location.reverseGeocodeAsync(coord);
+      const place = places[0];
+      if (!place) return fallbackLabel;
+
+      return (
+        place.name ||
+        place.district ||
+        place.subregion ||
+        place.city ||
+        place.region ||
+        fallbackLabel
+      );
+    } catch {
+      return fallbackLabel;
+    }
+  };
 
   const getRideCreatedAtMs = (createdAt: any): number => {
     if (!createdAt) return 0;
@@ -656,16 +855,40 @@ function RideAppScreen() {
     return (hour >= 8 && hour < 11) || (hour >= 17 && hour < 22);
   };
 
+  const BIKE_FARE_TABLE = [
+    { distanceKm: 1, normal: 18, peak: 25 },
+    { distanceKm: 2, normal: 20, peak: 30 },
+    { distanceKm: 3, normal: 24, peak: 40 },
+    { distanceKm: 4, normal: 34, peak: 60 },
+    { distanceKm: 5, normal: 38, peak: 72 },
+    { distanceKm: 6, normal: 42, peak: 78 },
+    { distanceKm: 7, normal: 65, peak: 87},
+    { distanceKm: 8, normal: 80, peak: 98 },
+    { distanceKm: 9, normal: 90, peak: 109 },
+    { distanceKm: 10, normal: 102, peak: 130 },
+    { distanceKm: 11, normal: 120, peak: 152 },
+    { distanceKm: 12, normal: 130, peak: 162 },
+    { distanceKm: 13, normal: 138, peak: 187 },
+    { distanceKm: 14, normal: 150, peak: 200 },
+    { distanceKm: 15, normal: 175, peak: 230 },
+    { distanceKm: 16, normal: 190, peak: 250 },
+    { distanceKm: 17, normal: 210, peak: 280 },
+    { distanceKm: 18, normal: 230, peak: 290 },
+  ] as const;
+
+  const getBikeFareFromTable = (distanceKm: number, demandLevel: DemandLevel) => {
+    const matchedRow = BIKE_FARE_TABLE.find((row) => distanceKm <= row.distanceKm);
+    if (!matchedRow) return null;
+
+    if (demandLevel === 'peak') return matchedRow.peak;
+    return matchedRow.normal;
+  };
+
   const getDynamicBikeFare = (distanceKm: number) => {
-    if (distanceKm <= 1.5) return 20;
-    if (distanceKm <= 2.5) {
-      const demandLevel = getDemandLevel();
-      if (demandLevel === 'low') return 25;
-      if (demandLevel === 'normal') return 28;
-      if (demandLevel === 'high') return 30;
-      return 32;
-    }
     const demandLevel = getDemandLevel();
+    const tableFare = distanceKm <= 11 ? getBikeFareFromTable(distanceKm, demandLevel) : null;
+    if (tableFare !== null) return tableFare;
+
     const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.bike) * 60);
     return calculateRideFare('bike', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
   };
@@ -849,10 +1072,16 @@ function RideAppScreen() {
     return 2;
   };
 
+  const isWithinDriverDestinationMarkerRadius = (ride: Ride) => {
+    if (!driverDestinationFilterEnabled || !driverDestinationMarker) return true;
+    return calcDist(ride.drop, driverDestinationMarker) <= DRIVER_DESTINATION_MARKER_RADIUS_KM;
+  };
+
   const isDriverEligibleForRide = (ride: Ride) => ride.type === driverVehicle || (ride.type === 'Parcel' && driverVehicle === 'Bike');
 
-  const visibleDriverRides = rides
+  const visibleDriverRides = (driverOnline ? rides : [])
     .filter((ride) => isDriverEligibleForRide(ride) && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
+    .filter((ride) => isWithinDriverDestinationMarkerRadius(ride))
     .filter((ride) => ride.type !== 'ShareAuto' || !location || getDistanceFromDriver(ride) <= 3)
     .sort((a, b) => {
       const stageDiff = getDriverNotificationStage(a) - getDriverNotificationStage(b);
@@ -1077,18 +1306,47 @@ function RideAppScreen() {
 
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
-          const initial = await Location.getCurrentPositionAsync({});
-          const pos = { latitude: initial.coords.latitude, longitude: initial.coords.longitude };
-          if (mounted) {
+          const applyResolvedLocation = (pos: Coord) => {
+            if (!mounted) return;
+            const quickArea = getNearestPopularArea(pos);
             setLocation(pos);
-            setPickupCoords(pos);
+            setPickupCoords((prev) => prev || pos);
+            setPickupInput((prev) => (prev === 'Current Location' ? quickArea : prev));
+            setIsFetchingCurrentLocation(false);
+
+            getAreaLabelFromCoord(pos, quickArea).then((pickupArea) => {
+              if (!mounted) return;
+              setPickupInput((prev) => (prev === 'Current Location' || prev === quickArea ? pickupArea : prev));
+            });
+          };
+
+          const lastKnown = await Location.getLastKnownPositionAsync({});
+          if (lastKnown) {
+            applyResolvedLocation({ latitude: lastKnown.coords.latitude, longitude: lastKnown.coords.longitude });
           }
+
+          try {
+            const initial = await Promise.race<Location.LocationObject | null>([
+              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+              new Promise<Location.LocationObject | null>((resolve) => setTimeout(() => resolve(null), 4500)),
+            ]);
+
+            if (initial) {
+              applyResolvedLocation({ latitude: initial.coords.latitude, longitude: initial.coords.longitude });
+            }
+          } catch {
+            if (mounted && !lastKnown) setIsFetchingCurrentLocation(false);
+          }
+
           locationSubscription = await Location.watchPositionAsync({ distanceInterval: 10 }, (loc) => {
             if (!mounted) return;
             setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
           });
+        } else if (mounted) {
+          setIsFetchingCurrentLocation(false);
         }
       } catch {
+        if (mounted) setIsFetchingCurrentLocation(false);
         // Keep app functional even when location/storage services fail.
       }
     };
@@ -1100,6 +1358,53 @@ function RideAppScreen() {
       locationSubscription?.remove();
     };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadDriverDestinationToggleUsage = async () => {
+      const today = getLocalDateKey();
+      if (!currentUserId) {
+        if (!mounted) return;
+        setDriverDestinationToggleUsageDate(today);
+        setDriverDestinationToggleUsageCount(0);
+        return;
+      }
+
+      try {
+        const raw = await AsyncStorage.getItem(getDriverDestinationToggleUsageStorageKey());
+        if (!mounted) return;
+
+        if (!raw) {
+          setDriverDestinationToggleUsageDate(today);
+          setDriverDestinationToggleUsageCount(0);
+          return;
+        }
+
+        const parsed = JSON.parse(raw) as { date?: string; count?: number };
+        const storedDate = parsed?.date || today;
+        const storedCount = Number.isFinite(parsed?.count) ? Math.max(0, parsed.count as number) : 0;
+
+        if (storedDate === today) {
+          setDriverDestinationToggleUsageDate(storedDate);
+          setDriverDestinationToggleUsageCount(storedCount);
+          return;
+        }
+
+        setDriverDestinationToggleUsageDate(today);
+        setDriverDestinationToggleUsageCount(0);
+      } catch {
+        if (!mounted) return;
+        setDriverDestinationToggleUsageDate(today);
+        setDriverDestinationToggleUsageCount(0);
+      }
+    };
+
+    loadDriverDestinationToggleUsage();
+
+    return () => {
+      mounted = false;
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     if (!activeRide?.id) {
@@ -1219,17 +1524,29 @@ function RideAppScreen() {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
       list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
       setDriverHistory(list);
+      const payableAmount = list.reduce((sum, item) => sum + (item.appFeeToApp || 0), 0);
+      setDriverPayableToApp(Math.max(0, Math.round(payableAmount)));
+      const pickupTimes = list
+        .filter((item) => item.status === 'completed' && typeof item.pickupReachMinutes === 'number' && item.pickupReachMinutes > 0)
+        .map((item) => item.pickupReachMinutes as number);
+      const avgPickupMinutes = pickupTimes.length
+        ? Math.round(pickupTimes.reduce((sum, mins) => sum + mins, 0) / pickupTimes.length)
+        : 0;
+      setDriverAvgPickupMinutes(avgPickupMinutes);
     }, () => {
       setDriverHistory([]);
+      setDriverPayableToApp(0);
+      setDriverAvgPickupMinutes(0);
     });
     return unsub;
   }, [mode, currentUserId]);
 
   useEffect(() => {
-    if (mode !== 'DRIVER' || !driverVehicle || !isIdentitySet || !!currentRide) return;
+    if (mode !== 'DRIVER' || !driverOnline || !driverVehicle || !isIdentitySet || !!currentRide) return;
 
     const freshRideIds = rides
       .filter(r => isDriverEligibleForRide(r) && !ignoredRides.includes(r.id || '') && isFreshWaitingRide(r))
+      .filter((r) => isWithinDriverDestinationMarkerRadius(r))
       .map(r => r.id)
       .filter((id): id is string => !!id);
 
@@ -1243,7 +1560,7 @@ function RideAppScreen() {
       freshRideIds.forEach((id) => alertedRideIdsRef.current.add(id));
       playDriverAlertForTwoSeconds();
     }
-  }, [mode, driverVehicle, isIdentitySet, currentRide, rides, ignoredRides]);
+  }, [mode, driverOnline, driverVehicle, isIdentitySet, currentRide, rides, ignoredRides, driverDestinationFilterEnabled, driverDestinationMarker]);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'rides'), (snapshot) => {
@@ -1487,13 +1804,13 @@ function RideAppScreen() {
     }
   }, [destCoords, pickupCoords, rides]);
 
-  const calcDist = (a: Coord, b: Coord) => {
+  function calcDist(a: Coord, b: Coord) {
     const R = 6371;
     const dLat = (b.latitude - a.latitude) * Math.PI / 180;
     const dLon = (b.longitude - a.longitude) * Math.PI / 180;
     const val = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * Math.PI / 180) * Math.cos(b.latitude * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
     return R * 2 * Math.atan2(Math.sqrt(val), Math.sqrt(1 - val));
-  };
+  }
 
   const isWithinHyderabadService = (coord: Coord) => {
     return calcDist(HYDERABAD_CENTER, coord) <= HYDERABAD_SERVICE_RADIUS_KM;
@@ -1535,6 +1852,12 @@ function RideAppScreen() {
     if (!ride) return '';
     if (isComboParcelSender(ride)) return 'Parcel';
     return ride.type;
+  };
+
+  const getPickupReachMinutes = (ride: Ride) => {
+    const acceptedAtMs = ride.acceptedAtMs || getRideCreatedAtMs(ride.createdAt);
+    if (!acceptedAtMs) return 0;
+    return Math.max(1, Math.round((Date.now() - acceptedAtMs) / 60000));
   };
 
   const getDirectionCosine = (aStart: Coord, aEnd: Coord, bStart: Coord, bEnd: Coord) => {
@@ -1759,17 +2082,56 @@ function RideAppScreen() {
     setShowEarnPage(false);
   };
 
-  const creditEarnRewardIfEligible = async (ride: Ride) => {
-    if (!ride.earnBookedByUserId || ride.fare <= EARN_REWARD_MIN_FARE) return;
+  const settleEarnFlowForCompletedRide = async (ride: Ride) => {
+    const baseDriverPayout = Math.max(0, Math.round(ride.fare || 0));
+    if (!ride.earnBookedByUserId) {
+      return {
+        finalFare: baseDriverPayout,
+        driverPayout: baseDriverPayout,
+        appFeeToApp: 0,
+      };
+    }
+
+    const eligibleHiddenChargeRideType = ride.type === 'Bike' || ride.type === 'Auto' || ride.type === 'Cab';
+
     try {
-      await updateDoc(doc(db, 'users', ride.earnBookedByUserId), {
-        earnWallet: increment(EARN_REWARD_AMOUNT),
-      });
-      if (ride.earnBookedByUserId === currentUserId) {
-        setProfileEarnWallet((prev) => prev + EARN_REWARD_AMOUNT);
+      const earnUserRef = doc(db, 'users', ride.earnBookedByUserId);
+      const earnUserSnap = await getDoc(earnUserRef);
+      const earnUsageCount = Number(earnUserSnap.data()?.earnUsageCount || 0);
+
+      if (earnUsageCount <= 0) {
+        await updateDoc(earnUserRef, {
+          earnWallet: increment(EARN_REWARD_AMOUNT),
+          earnUsageCount: increment(1),
+        });
+        if (ride.earnBookedByUserId === currentUserId) {
+          setProfileEarnWallet((prev) => prev + EARN_REWARD_AMOUNT);
+        }
+
+        return {
+          finalFare: baseDriverPayout,
+          driverPayout: baseDriverPayout,
+          appFeeToApp: 0,
+        };
       }
+
+      await updateDoc(earnUserRef, {
+        earnUsageCount: increment(1),
+      });
+
+      const appFeeToApp = eligibleHiddenChargeRideType ? EARN_REWARD_AMOUNT : 0;
+      return {
+        finalFare: baseDriverPayout + appFeeToApp,
+        driverPayout: baseDriverPayout,
+        appFeeToApp,
+      };
     } catch {
-      // Ignore reward credit failure and keep ride completion uninterrupted.
+      // Do not block completion if earn settlement storage fails.
+      return {
+        finalFare: baseDriverPayout,
+        driverPayout: baseDriverPayout,
+        appFeeToApp: 0,
+      };
     }
   };
 
@@ -1848,12 +2210,17 @@ function RideAppScreen() {
   const addRideHistoryEntry = async (
     ride: Ride,
     status: 'completed' | 'cancelled',
-    cancelledBy?: 'DRIVER' | 'PASSENGER'
+    cancelledBy?: 'DRIVER' | 'PASSENGER',
+    settlement?: {
+      finalFare?: number;
+      driverPayout?: number;
+      appFeeToApp?: number;
+    }
   ) => {
     const historyPayload: Record<string, any> = {
       rideId: ride.id || '',
       rideType: ride.type,
-      fare: ride.fare,
+      fare: settlement?.finalFare ?? ride.fare,
       status,
       createdAt: Timestamp.now(),
       ...(ride.pickupAddr ? { pickupAddr: ride.pickupAddr } : {}),
@@ -1869,6 +2236,10 @@ function RideAppScreen() {
       ...(ride.earnPassengerName ? { earnPassengerName: ride.earnPassengerName } : {}),
       ...(ride.earnPassengerPhone ? { earnPassengerPhone: ride.earnPassengerPhone } : {}),
       ...(ride.earnPassengerEmail ? { earnPassengerEmail: ride.earnPassengerEmail } : {}),
+      ...(typeof ride.pickupReachMinutes === 'number' && ride.pickupReachMinutes > 0 ? { pickupReachMinutes: ride.pickupReachMinutes } : {}),
+      ...(typeof settlement?.driverPayout === 'number' ? { driverPayout: settlement.driverPayout } : {}),
+      ...(typeof settlement?.appFeeToApp === 'number' ? { appFeeToApp: settlement.appFeeToApp } : {}),
+      ...(typeof settlement?.appFeeToApp === 'number' && settlement.appFeeToApp > 0 ? { hiddenEarnSurcharge: settlement.appFeeToApp } : {}),
     };
 
     await addDoc(collection(db, 'rideHistory'), historyPayload);
@@ -1920,9 +2291,11 @@ function RideAppScreen() {
       return Alert.alert("Access Denied", "Your account is currently restricted.");
     }
     if (!driverPhone || !vehiclePlate) return setIsIdentitySet(false);
+    const acceptedAtMs = Date.now();
     const updatePayload: any = {
       status: 'accepted', driverId: auth.currentUser?.uid,
       driverPhone: driverPhone, driverName: driverName, vehiclePlate: vehiclePlate,
+      acceptedAtMs,
       ...(ride.type === 'ShareAuto'
         ? { shareAutoPickupCompletedIds: [], shareAutoDropCompletedIds: [] }
         : {})
@@ -1940,6 +2313,7 @@ function RideAppScreen() {
       driverPhone,
       driverName,
       vehiclePlate,
+      acceptedAtMs,
       driverPhotoUrl: driverPhotoUrl || undefined,
     });
   };
@@ -2181,7 +2555,12 @@ function RideAppScreen() {
 
     const done = new Set(currentRide.shareAutoPickupCompletedIds || []);
     done.add(selectedSharePassengerId);
-    await updateDoc(doc(db, 'rides', currentRide.id), { shareAutoPickupCompletedIds: Array.from(done) });
+    const isFirstPickup = (currentRide.shareAutoPickupCompletedIds || []).length === 0;
+    const updatePayload: Record<string, unknown> = { shareAutoPickupCompletedIds: Array.from(done) };
+    if (isFirstPickup && !currentRide.pickupReachMinutes) {
+      updatePayload.pickupReachMinutes = getPickupReachMinutes(currentRide);
+    }
+    await updateDoc(doc(db, 'rides', currentRide.id), updatePayload);
     setOtpInput('');
     setSelectedSharePassengerId('');
   };
@@ -2196,7 +2575,6 @@ function RideAppScreen() {
     if (completedDrops.length >= allPassengerCount && allPassengerCount > 0) {
       const totalShareFare = (currentRide.shareAutoPassengerFares || []).reduce((sum, x) => sum + x, 0) || currentRide.fare;
       await addRideHistoryEntry(currentRide, 'completed');
-      await creditEarnRewardIfEligible(currentRide);
       setDriverStats(prev => ({ ...prev, completed: prev.completed + 1, earnings: prev.earnings + totalShareFare }));
       await deleteDoc(doc(db, 'rides', currentRide.id));
       setCurrentRide(null);
@@ -2263,7 +2641,7 @@ function RideAppScreen() {
             <MapView 
               ref={mapRef}
               style={styles.map}
-              onPress={(e) => {
+              onPress={async (e) => {
                 const point = e.nativeEvent.coordinate;
                 if (!isWithinHyderabadService(point)) {
                   Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
@@ -2271,7 +2649,8 @@ function RideAppScreen() {
                 }
                 void playMarkerSound(400);
                 setDestCoords(point);
-                setDestination("Dropped Pin");
+                const dropArea = await getAreaLabelFromCoord(point, 'Dropped Pin');
+                setDestination(dropArea);
               }}
               initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : DEFAULT_MAP_REGION}
             >
@@ -2308,7 +2687,11 @@ function RideAppScreen() {
           )
       ) : (
       <View style={styles.proBackground}>
-             <ScrollView contentContainerStyle={{alignItems: 'center', paddingTop: 80}}>
+             <ScrollView
+               style={{ width: '100%' }}
+               contentContainerStyle={{ alignItems: 'center', paddingTop: 80, paddingBottom: 180, flexGrow: 1 }}
+               showsVerticalScrollIndicator={false}
+             >
                <View style={styles.brandingContainer}>
                   <Text style={styles.brandName}>Share-It</Text>
                   <Text style={styles.slogan}>Where the driver is the king 👑</Text>
@@ -2336,6 +2719,26 @@ function RideAppScreen() {
                     <View style={styles.dashItem}><Text style={[styles.dashVal, {color:'#34C759'}]}>₹{driverStats.earnings}</Text><Text style={styles.dashLab}>Earned</Text></View>
                     <View style={styles.dashItem}><Text style={[styles.dashVal, {color:'#FF3B30'}]}>{driverStats.cancelled}</Text><Text style={styles.dashLab}>Cancelled</Text></View>
                     <View style={styles.dashItem}><Text style={styles.dashVal}>⭐ {driverStats.rating || 'N/A'}</Text><Text style={styles.dashLab}>Rating</Text></View>
+                    <View style={styles.dashItem}><Text style={styles.dashVal}>{driverAvgPickupMinutes ? `${driverAvgPickupMinutes} min` : 'N/A'}</Text><Text style={styles.dashLab}>Avg pickup time</Text></View>
+                    <View style={styles.dashItem}><Text style={[styles.dashVal, {color:'#B26A00'}]}>₹{driverPayableToApp}</Text><Text style={styles.dashLab}>Need to pay for app</Text></View>
+                  </View>
+                  <View style={styles.driverInfoCard}>
+                    <Text style={styles.driverInfoTitle}>Driver Details</Text>
+                    <Text style={styles.driverInfoText}>Name: {driverName || 'N/A'}</Text>
+                    <Text style={styles.driverInfoText}>Mobile: {driverPhone || 'N/A'}</Text>
+                    <Text style={styles.driverInfoText}>Vehicle No: {vehiclePlate || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.driverAvailabilityCard}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.driverAvailabilityTitle}>Ride Requests</Text>
+                      <Text style={styles.driverAvailabilityHint}>{driverOnline ? 'You are online and receiving requests' : 'You are offline and hidden from requests'}</Text>
+                    </View>
+                    <Switch
+                      value={driverOnline}
+                      onValueChange={setDriverOnline}
+                      trackColor={{ false: '#CBD5E1', true: '#86EFAC' }}
+                      thumbColor={driverOnline ? '#16A34A' : '#F8FAFC'}
+                    />
                   </View>
                   <Pressable style={styles.historyBtn} onPress={() => setShowHistory(true)}>
                     <Text style={styles.historyBtnText}>View Ride History</Text>
@@ -2362,6 +2765,36 @@ function RideAppScreen() {
                        </View>
                    </View>
                )}
+
+               <View style={styles.driverFilterCard}>
+                 <View style={{ flex: 1 }}>
+                   <Text style={styles.driverFilterTitle}>Destination Marker Filter</Text>
+                   <Text style={styles.driverFilterHint}>
+                     {driverDestinationFilterEnabled && driverDestinationMarker
+                       ? `Notifications only for rides with destination within ${DRIVER_DESTINATION_MARKER_RADIUS_KM} km`
+                       : 'Turn on to choose a destination area on map'}
+                   </Text>
+                   <Text style={styles.driverFilterHint}>Uses left today: {driverDestinationToggleUsesLeft}/{DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT}</Text>
+                 </View>
+                 <Switch
+                   value={driverDestinationFilterEnabled}
+                   onValueChange={(enabled) => {
+                     if (enabled) {
+                       if (!canUseDriverDestinationToggleToday()) {
+                         Alert.alert('Daily limit reached', `You can use this toggle only ${DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT} times in a day.`);
+                         return;
+                       }
+                       setPendingDriverDestinationMarker(driverDestinationMarker || location || null);
+                       setShowDriverDestinationMap(true);
+                       return;
+                     }
+                     setDriverDestinationFilterEnabled(false);
+                   }}
+                   disabled={!driverDestinationFilterEnabled && driverDestinationToggleUsesLeft <= 0}
+                   trackColor={{ false: '#CBD5E1', true: '#86EFAC' }}
+                   thumbColor={driverDestinationFilterEnabled ? '#16A34A' : '#F8FAFC'}
+                 />
+               </View>
             </ScrollView>
           </View>
       )}
@@ -2434,6 +2867,9 @@ function RideAppScreen() {
                 >
                   <Text style={styles.buttonText}>Lets Go</Text>
                 </Pressable>
+                {isFetchingCurrentLocation && (
+                  <Text style={styles.currentLocationHintText}>Getting your current location shortly...</Text>
+                )}
               </>
             ) : (
               <View style={{alignItems: 'center'}}>
@@ -2608,7 +3044,11 @@ function RideAppScreen() {
                             <TextInput style={styles.input} placeholder="Enter Passenger OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
                             <Pressable style={styles.primaryButton} onPress={async () => {
                               if (decryptOTP(currentRide.encryptedOTP) !== otpInput.trim()) return Alert.alert('Error', 'Invalid passenger OTP');
-                              await updateDoc(doc(db, 'rides', currentRide.id!), { comboStage: 'passenger_drop', status: 'started' });
+                              await updateDoc(doc(db, 'rides', currentRide.id!), {
+                                comboStage: 'passenger_drop',
+                                status: 'started',
+                                ...(currentRide.pickupReachMinutes ? {} : { pickupReachMinutes: getPickupReachMinutes(currentRide) }),
+                              });
                               setOtpInput('');
                             }}>
                               <Text style={styles.buttonText}>Confirm Passenger Pickup</Text>
@@ -2704,7 +3144,10 @@ function RideAppScreen() {
                         <TextInput style={styles.input} placeholder="Enter OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
                         <Pressable style={styles.primaryButton} onPress={async () => {
                              if(decryptOTP(currentRide.encryptedOTP) === otpInput) {
-                                await updateDoc(doc(db, 'rides', currentRide.id!), { status: 'started' });
+                                await updateDoc(doc(db, 'rides', currentRide.id!), {
+                                  status: 'started',
+                                  ...(currentRide.pickupReachMinutes ? {} : { pickupReachMinutes: getPickupReachMinutes(currentRide) }),
+                                });
                                 setOtpInput('');
                              } else Alert.alert("Error", "Invalid OTP");
                         }}><Text style={styles.buttonText}>Start Trip</Text></Pressable>
@@ -2728,9 +3171,15 @@ function RideAppScreen() {
                             <Pressable style={styles.cancelButton} onPress={async () => {
                                 const finalDrop = currentRide.comboParcelDrop || currentRide.drop;
                               if (location && calcDist(location, finalDrop) <= 1) {
-                                    await addRideHistoryEntry(currentRide, 'completed');
-                                await creditEarnRewardIfEligible(currentRide);
-                                    setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + (currentRide.comboTotalFare || ((currentRide.comboParcelFare || 0) + currentRide.fare))}));
+                                    const settlement = await settleEarnFlowForCompletedRide(currentRide);
+                                    const comboBasePayout = currentRide.comboTotalFare || ((currentRide.comboParcelFare || 0) + currentRide.fare);
+                                    const comboFinalFare = comboBasePayout + settlement.appFeeToApp;
+                                    await addRideHistoryEntry(currentRide, 'completed', undefined, {
+                                      finalFare: comboFinalFare,
+                                      driverPayout: comboBasePayout,
+                                      appFeeToApp: settlement.appFeeToApp,
+                                    });
+                                    setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + comboBasePayout}));
                                     await deleteDoc(doc(db, 'rides', currentRide.id!));
                                     setCurrentRide(null);
                               } else Alert.alert('Notice', 'Arrive within 1 km of parcel drop first');
@@ -2743,9 +3192,9 @@ function RideAppScreen() {
                         <Pressable style={[styles.navButton, {backgroundColor: '#34C759'}]} onPress={() => openGoogleMaps(currentRide.drop.latitude, currentRide.drop.longitude, "Dropoff")}><Text style={styles.navButtonText}>🏁 Go to Destination</Text></Pressable>
                         <Pressable style={styles.cancelButton} onPress={async () => {
                           if (location && calcDist(location, currentRide.drop) <= 1) {
-                                await addRideHistoryEntry(currentRide, 'completed');
-                            await creditEarnRewardIfEligible(currentRide);
-                                setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + currentRide.fare}));
+                                const settlement = await settleEarnFlowForCompletedRide(currentRide);
+                                await addRideHistoryEntry(currentRide, 'completed', undefined, settlement);
+                                setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + settlement.driverPayout}));
                                 await deleteDoc(doc(db, 'rides', currentRide.id!));
                                 setCurrentRide(null);
                           } else Alert.alert("Notice", "Arrive within 1 km of destination first");
@@ -2768,19 +3217,37 @@ function RideAppScreen() {
                 </View>
                 {(visibleDriverRides.length === 0 || (penalty !== "CLEAR" && penalty !== "WARNING" && penalty !== "BEHAVIOR_WARNING")) ? (
                   <Text style={styles.emptyText}>
-                      {(penalty !== "CLEAR" && penalty !== "WARNING" && penalty !== "BEHAVIOR_WARNING") 
+                      {!driverOnline
+                      ? "🔕 You are offline. Turn on Ride Requests to get trips."
+                      : (penalty !== "CLEAR" && penalty !== "WARNING" && penalty !== "BEHAVIOR_WARNING") 
                       ? "❌ Access Restricted." 
                       : "Waiting for requests..."}
                   </Text>
                 ) : 
                   visibleDriverRides.map(r => (
                     <View key={r.id} style={styles.notificationCard}>
+                      {(() => {
+                        const pickupDistanceKm = location ? calcDist(location, r.pickup) : null;
+                        const pickupEtaMinutes = pickupDistanceKm !== null ? calcSegmentEtaMinutes(pickupDistanceKm) : null;
+                        const pickupNearbyArea = getNearestPopularArea(r.pickup);
+                        const dropNearbyArea = getNearestPopularArea(r.drop);
+                        const pickupArea = getPrimaryAreaName(r.pickupAddr, pickupNearbyArea);
+                        const dropArea = getPrimaryAreaName(r.dropAddr, dropNearbyArea);
+                        const pickupMandal = getMandalName(r.pickupAddr, pickupNearbyArea);
+                        const dropMandal = getMandalName(r.dropAddr, dropNearbyArea);
+                        return (
                       <View style={styles.notifHeader}>
                         <Text style={{fontSize: 28}}>{icons[r.type]}</Text>
                         <View style={{flex: 1, marginLeft: 10}}>
                           <Text style={styles.highlightPrice}>₹{r.comboMode === 'PARCEL_PLUS_BIKE' ? (r.comboTotalFare || ((r.comboParcelFare || 0) + r.fare)) : r.fare} {r.tip > 0 && `(+₹${r.tip})`}</Text>
                           <Text style={{color:'#8E8E93', fontSize: 12}}>{r.comboMode === 'PARCEL_PLUS_BIKE' ? `${(r.comboTotalDistance || r.distance).toFixed(1)} km combo` : (r.type === 'Parcel' ? `${r.distance.toFixed(1)} km delivery` : `${r.distance.toFixed(1)} km ride`)}</Text>
-                          <Text style={styles.routeText}>{r.pickupAddr || 'Pickup'} ➔ {r.dropAddr || 'Drop'}</Text>
+                          <Text style={styles.routeText}>{pickupArea} ➔ {dropArea}</Text>
+                          <Text style={{color:'#8E8E93', fontSize: 12}}>Mandal: {pickupMandal} ➔ {dropMandal}</Text>
+                          <Text style={{color:'#8E8E93', fontSize: 12}}>
+                            {pickupDistanceKm !== null
+                              ? `You to pickup: ${pickupDistanceKm.toFixed(1)} km • ~${pickupEtaMinutes} min`
+                              : 'You to pickup: waiting for location...'}
+                          </Text>
                           {r.comboMode === 'PARCEL_PLUS_BIKE' && (
                             <View style={styles.parcelSingleNotifCard}>
                               <Text style={styles.parcelSingleNotifTitle}>COMBO • Delivery + Passenger Ride</Text>
@@ -2814,6 +3281,8 @@ function RideAppScreen() {
                           )}
                         </View>
                       </View>
+                        );
+                      })()}
                       <View style={styles.row}>
                         <Pressable style={styles.negButton} onPress={() => setIgnoredRides([...ignoredRides, r.id!])}><Text style={{color: '#8E8E93'}}>Skip</Text></Pressable>
                         <Pressable style={styles.accButton} onPress={() => acceptRide(r)}><Text style={styles.accText}>ACCEPT</Text></Pressable>
@@ -2933,7 +3402,7 @@ function RideAppScreen() {
             <View style={styles.earnSummaryCard}>
               <Text style={styles.earnSummaryLabel}>Earned Amount</Text>
               <Text style={styles.earnSummaryValue}>₹{profileEarnWallet}</Text>
-              <Text style={styles.earnSummaryHint}>You get ₹{EARN_REWARD_AMOUNT} when a booked ride is completed and fare is above ₹{EARN_REWARD_MIN_FARE}.</Text>
+              <Text style={styles.earnSummaryHint}>First completed Earn booking gives ₹{EARN_REWARD_AMOUNT} reward.</Text>
             </View>
 
             <Text style={styles.earnSectionTitle}>Passenger Data</Text>
@@ -3236,6 +3705,78 @@ function RideAppScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showDriverDestinationMap}
+        animationType="slide"
+        onRequestClose={() => {
+          setShowDriverDestinationMap(false);
+          setPendingDriverDestinationMarker(driverDestinationMarker);
+        }}
+      >
+        <View style={styles.driverMapModalWrap}>
+          <MapView
+            style={styles.driverMapModalMap}
+            initialRegion={
+              pendingDriverDestinationMarker
+                ? { ...pendingDriverDestinationMarker, latitudeDelta: 0.05, longitudeDelta: 0.05 }
+                : location
+                  ? { ...location, latitudeDelta: 0.05, longitudeDelta: 0.05 }
+                  : DEFAULT_MAP_REGION
+            }
+            onPress={(e) => {
+              const point = e.nativeEvent.coordinate;
+              setPendingDriverDestinationMarker(point);
+              void playMarkerSound(400);
+            }}
+          >
+            {pendingDriverDestinationMarker && (
+              <Marker
+                coordinate={pendingDriverDestinationMarker}
+                title="Destination filter marker"
+                pinColor="green"
+              />
+            )}
+          </MapView>
+
+          <View style={styles.driverMapModalControls}>
+            <Text style={styles.driverMapModalTitle}>Tap map to set destination marker</Text>
+            <Text style={styles.driverMapModalHint}>You will receive ride notifications only when destination is within {DRIVER_DESTINATION_MARKER_RADIUS_KM} km.</Text>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.negButton, { marginRight: 8 }]}
+                onPress={() => {
+                  setShowDriverDestinationMap(false);
+                  setPendingDriverDestinationMarker(driverDestinationMarker);
+                }}
+              >
+                <Text style={{ color: '#475569', fontWeight: '700' }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.accButton, !pendingDriverDestinationMarker && styles.disabledConfirmBtn]}
+                disabled={!pendingDriverDestinationMarker}
+                onPress={async () => {
+                  if (!pendingDriverDestinationMarker) return;
+                  const today = getLocalDateKey();
+                  const usedToday = driverDestinationToggleUsageDate === today ? driverDestinationToggleUsageCount : 0;
+                  if (usedToday >= DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT) {
+                    Alert.alert('Daily limit reached', `You can use this toggle only ${DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT} times in a day.`);
+                    setShowDriverDestinationMap(false);
+                    return;
+                  }
+
+                  await persistDriverDestinationToggleUsage(today, usedToday + 1);
+                  setDriverDestinationMarker(pendingDriverDestinationMarker);
+                  setDriverDestinationFilterEnabled(true);
+                  setShowDriverDestinationMap(false);
+                }}
+              >
+                <Text style={styles.accText}>Confirm</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -3267,6 +3808,12 @@ const styles = StyleSheet.create({
   dashItem: { width: '45%', alignItems: 'center', marginBottom: 15 },
   dashVal: { fontSize: 22, fontWeight: '900', color: '#1C1C1E' },
   dashLab: { fontSize: 12, color: '#8E8E93', fontWeight: 'bold' },
+  driverInfoCard: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#E5E7EB', padding: 12, marginTop: 10 },
+  driverInfoTitle: { fontSize: 14, fontWeight: '900', color: '#111827', marginBottom: 6 },
+  driverInfoText: { fontSize: 13, color: '#374151', marginBottom: 3 },
+  driverAvailabilityCard: { width: '100%', backgroundColor: '#F8FAFC', borderColor: '#CBD5E1', borderWidth: 1, borderRadius: 12, padding: 10, marginTop: 10, marginBottom: 4, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  driverAvailabilityTitle: { color: '#0F172A', fontWeight: '800' },
+  driverAvailabilityHint: { color: '#475569', fontSize: 12, marginTop: 2 },
   header: { position: 'absolute', top: 50, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10 },
   currentLocFab: { position: 'absolute', right: 18, bottom: 235 + CURRENT_LOC_FAB_RISE, width: 24, height: 24, borderRadius: 12, backgroundColor: '#007AFF', alignItems: 'center', justifyContent: 'center', elevation: 8, shadowColor: '#111827', shadowOpacity: 0.2, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, zIndex: 12, borderWidth: 1, borderColor: '#005FCC' },
   currentLocFabText: { fontSize: 12, color: '#FFFFFF', fontWeight: '900' },
@@ -3275,6 +3822,7 @@ const styles = StyleSheet.create({
   bottomCard: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: 'white', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20 },
   input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
   primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
+  currentLocationHintText: { marginTop: 6, fontSize: 11, color: '#6B7280', textAlign: 'center' },
   cancelButton: { backgroundColor: '#FF3B30', padding: 12, borderRadius: 12, alignItems: 'center', marginTop: 10 },
   buttonText: { color: 'white', fontWeight: 'bold' },
   rideCard: { width: 85, padding: 10, backgroundColor: '#fff', marginRight: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E5E5EA' },
@@ -3327,6 +3875,9 @@ const styles = StyleSheet.create({
   parcelSingleNotifCard: { backgroundColor: '#EAF8EE', borderColor: '#8BC59B', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 6 },
   parcelSingleNotifTitle: { color: '#1B5E20', fontWeight: '900', marginBottom: 3 },
   parcelSingleNotifMeta: { color: '#256B31', fontSize: 12 },
+  driverFilterCard: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1', borderWidth: 1, borderRadius: 12, padding: 10, marginTop: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  driverFilterTitle: { color: '#0F172A', fontWeight: '800' },
+  driverFilterHint: { color: '#475569', fontSize: 12, marginTop: 2 },
   notificationCard: { backgroundColor: '#fff', borderRadius: 15, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#007AFF' },
   notifHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   accButton: { flex: 2, backgroundColor: '#34C759', padding: 12, borderRadius: 10, alignItems: 'center' },
@@ -3390,6 +3941,12 @@ const styles = StyleSheet.create({
   chatComposer: { flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#D1D5DB' },
   chatInput: { flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, marginRight: 8 },
   chatSend: { backgroundColor: '#0F8A47', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 18 }
+  ,driverMapModalWrap: { flex: 1, backgroundColor: '#FFFFFF' },
+  driverMapModalMap: { flex: 1 },
+  driverMapModalControls: { backgroundColor: 'rgba(255,255,255,0.96)', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 20, borderTopWidth: 1, borderTopColor: '#D1D5DB' },
+  driverMapModalTitle: { fontSize: 16, fontWeight: '900', color: '#0F172A', marginBottom: 4 },
+  driverMapModalHint: { color: '#475569', marginBottom: 10 },
+  disabledConfirmBtn: { backgroundColor: '#86EFAC', opacity: 0.45 }
   ,yellowTermsCard: { backgroundColor: '#FFF6CC', borderWidth: 1, borderColor: '#E8C549', borderRadius: 14, padding: 12, marginBottom: 14 },
   termsHeading: { color: '#6B4E00', fontWeight: '900', marginBottom: 8 },
   termsPoint: { color: '#5B4A17', marginBottom: 5, lineHeight: 18 },

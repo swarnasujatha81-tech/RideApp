@@ -22,6 +22,12 @@ echo ✓ Firebase configured from environment variables
 echo ✓ OTP Secret: Loaded from .env.local
 echo.
 
+REM Find an available port starting from 8081 to avoid interactive prompts
+for /f %%p in ('powershell -NoProfile -Command "$ports = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue ^| Select-Object -ExpandProperty LocalPort; $p = 8081; while ($ports -contains $p) { $p++ }; Write-Output $p"') do set EXPO_PORT=%%p
+
+echo Using available port: %EXPO_PORT%
+echo.
+
 REM Start Expo development server
 echo Starting Expo development server...
 echo ==================================================
@@ -39,5 +45,5 @@ echo.
 echo ==================================================
 echo.
 
-call npx expo start --port 8083
+call npx expo start --port %EXPO_PORT%
 pause
