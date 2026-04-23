@@ -16,7 +16,7 @@ import {
   doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
-import React, { Component, useEffect, useRef, useState } from 'react';
+import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -1115,48 +1115,52 @@ function RideAppScreen() {
     return calcDist(ride.drop, driverDestinationMarker) <= DRIVER_DESTINATION_MARKER_RADIUS_KM;
   };
 
-  const isDriverEligibleForRide = (ride: Ride) => (
+  const isDriverEligibleForRide = useCallback((ride: Ride) => (
     ride.type === driverVehicle ||
     (driverVehicle === 'Auto' && ride.type === 'ShareAuto') ||
     (ride.type === 'Parcel' && driverVehicle === 'Bike')
-  );
+  ), [driverVehicle]);
 
-  const visibleDriverRides = (driverOnline ? rides : [])
-    .filter((ride) => isDriverEligibleForRide(ride) && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
-    .filter((ride) => isWithinDriverDestinationMarkerRadius(ride))
-    .filter((ride) => ride.type !== 'ShareAuto' || !location || getDistanceFromDriver(ride) <= 3)
-    .reduce((list, ride) => {
-      if (ride.type !== 'ShareAuto') {
-        list.push(ride);
+  const visibleDriverRides = useMemo(() => {
+    if (!driverOnline) return [];
+
+    return rides
+      .filter((ride) => isDriverEligibleForRide(ride) && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
+      .filter((ride) => isWithinDriverDestinationMarkerRadius(ride))
+      .filter((ride) => ride.type !== 'ShareAuto' || !location || getDistanceFromDriver(ride) <= 3)
+      .reduce((list, ride) => {
+        if (ride.type !== 'ShareAuto') {
+          list.push(ride);
+          return list;
+        }
+
+        const groupKey = ride.shareAutoGroupKey || (ride.shareAutoPassengerIds || []).slice().sort().join('|');
+        const existingIndex = list.findIndex((item) => {
+          if (item.type !== 'ShareAuto') return false;
+          const itemKey = item.shareAutoGroupKey || (item.shareAutoPassengerIds || []).slice().sort().join('|');
+          return itemKey === groupKey;
+        });
+
+        if (existingIndex === -1) {
+          list.push(ride);
+          return list;
+        }
+
+        const existing = list[existingIndex];
+        const existingCreated = existing.createdAt?.toMillis?.() || 0;
+        const nextCreated = ride.createdAt?.toMillis?.() || 0;
+        if (nextCreated > existingCreated) {
+          list[existingIndex] = ride;
+        }
         return list;
-      }
-
-      const groupKey = ride.shareAutoGroupKey || (ride.shareAutoPassengerIds || []).slice().sort().join('|');
-      const existingIndex = list.findIndex((item) => {
-        if (item.type !== 'ShareAuto') return false;
-        const itemKey = item.shareAutoGroupKey || (item.shareAutoPassengerIds || []).slice().sort().join('|');
-        return itemKey === groupKey;
+      }, [] as Ride[])
+      .sort((a, b) => {
+        const stageDiff = getDriverNotificationStage(a) - getDriverNotificationStage(b);
+        if (stageDiff !== 0) return stageDiff;
+        if (a.type === 'ShareAuto' && b.type === 'ShareAuto') return getDistanceFromDriver(a) - getDistanceFromDriver(b);
+        return (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0);
       });
-
-      if (existingIndex === -1) {
-        list.push(ride);
-        return list;
-      }
-
-      const existing = list[existingIndex];
-      const existingCreated = existing.createdAt?.toMillis?.() || 0;
-      const nextCreated = ride.createdAt?.toMillis?.() || 0;
-      if (nextCreated > existingCreated) {
-        list[existingIndex] = ride;
-      }
-      return list;
-    }, [] as Ride[])
-    .sort((a, b) => {
-      const stageDiff = getDriverNotificationStage(a) - getDriverNotificationStage(b);
-      if (stageDiff !== 0) return stageDiff;
-      if (a.type === 'ShareAuto' && b.type === 'ShareAuto') return getDistanceFromDriver(a) - getDistanceFromDriver(b);
-      return (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0);
-    });
+  }, [driverOnline, rides, ignoredRides, location, isDriverEligibleForRide]);
 
   const playChatSound = async () => {
     try {
@@ -1662,6 +1666,38 @@ function RideAppScreen() {
   }, [userBookedRide?.id, currentRide?.id, currentUserId]);
 
   useEffect(() => {
+    if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto' || !currentUserId) return;
+
+    const unsubRideDoc = onSnapshot(doc(db, 'rides', userBookedRide.id), (snapshot) => {
+      if (snapshot.exists()) {
+        const updatedRide = { id: snapshot.id, ...snapshot.data() } as Ride;
+        if (isActiveRideStatus(updatedRide.status)) {
+          setUserBookedRide(updatedRide);
+        } else {
+          setUserBookedRide(null);
+        }
+      }
+    }, () => {});
+
+    return unsubRideDoc;
+  }, [userBookedRide?.id, currentUserId]);
+
+  useEffect(() => {
+    if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto' || !currentUserId) return;
+
+    const unsubBroadcast = onSnapshot(doc(db, 'rideAcceptanceBroadcast', `${userBookedRide.id}_${currentUserId}`), (snapshot) => {
+      if (snapshot.exists()) {
+        const broadcastData = snapshot.data();
+        if (broadcastData?.status === 'accepted' && userBookedRide?.id === broadcastData?.rideId) {
+          setUserBookedRide((prev) => prev ? { ...prev, status: 'accepted' as const } : null);
+        }
+      }
+    }, () => {});
+
+    return unsubBroadcast;
+  }, [userBookedRide?.id, currentUserId]);
+
+  useEffect(() => {
     if (!shareAutoSearchActive || !shareAutoPoolId) return;
 
     const scanShareAutoMatch = async (options: { allowPartialMatch: boolean; isFallbackAttempt: boolean }) => {
@@ -1757,10 +1793,13 @@ function RideAppScreen() {
           };
 
           const ref = await addDoc(collection(db, 'rides'), rideData);
+          const rideWithId = { ...rideData, id: ref.id };
+          setUserBookedRide(rideWithId);
+
           const selectedPassengerIds = new Set(selectedPassengers.map((p) => p.id));
           const docsToDelete = allPools.filter((pool) => selectedPassengerIds.has(pool.passengerId));
           await Promise.all(docsToDelete.map((docSnap) => deleteDoc(doc(db, 'shareAutoPools', docSnap.id!)).catch(() => undefined)));
-          setUserBookedRide({ ...rideData, id: ref.id });
+
           Alert.alert('Congratulations', 'All passengers found. Waiting for driver acceptance.');
           resetShareAutoSearch();
           return;
@@ -2434,17 +2473,31 @@ function RideAppScreen() {
       updatePayload.driverPhotoUrl = driverPhotoUrl;
     }
     
-    await updateDoc(doc(db, 'rides', ride.id!), updatePayload);
-    setCurrentRide({
+    const acceptedRide = {
       ...ride,
-      status: 'accepted',
+      status: 'accepted' as const,
       driverId: auth.currentUser?.uid || ride.driverId || null,
       driverPhone,
       driverName,
       vehiclePlate,
       acceptedAtMs,
       driverPhotoUrl: driverPhotoUrl || undefined,
-    });
+    };
+    setCurrentRide(acceptedRide);
+
+    if (ride.type === 'ShareAuto' && ride.shareAutoPassengerIds) {
+      for (const passengerId of ride.shareAutoPassengerIds) {
+        setDoc(doc(db, 'rideAcceptanceBroadcast', `${ride.id!}_${passengerId}`), {
+          rideId: ride.id!,
+          passengerId,
+          status: 'accepted',
+          acceptedAtMs,
+          createdAt: Timestamp.now(),
+        }).catch(() => {});
+      }
+    }
+
+    await updateDoc(doc(db, 'rides', ride.id!), updatePayload);
   };
 
   const cancelRide = async (id: string, isDriver: boolean, reason?: string) => {
@@ -3409,7 +3462,7 @@ function RideAppScreen() {
                       : "Waiting for requests..."}
                   </Text>
                 ) : 
-                  visibleDriverRides.map(r => (
+                  visibleDriverRides.map((r: Ride) => (
                     <View key={r.id} style={styles.notificationCard}>
                       {(() => {
                         const pickupDistanceKm = location ? calcDist(location, r.pickup) : null;
