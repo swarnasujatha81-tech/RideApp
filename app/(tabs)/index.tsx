@@ -57,6 +57,7 @@ const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
 const EARN_REWARD_AMOUNT = 5;
 
 type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
+type DriverVehicleType = 'Bike' | 'Auto' | 'Cab';
 type Coord = { latitude: number; longitude: number };
 
 interface Ride {
@@ -90,6 +91,7 @@ interface Ride {
   shareAutoPickupCompletedIds?: string[];
   shareAutoDropCompletedIds?: string[];
   shareAutoSeats?: number;
+  shareAutoGroupKey?: string;
   shareAutoMatchWay?: 'A' | 'B';
   shareAutoRouteNote?: string;
   comboMode?: 'PARCEL_PLUS_BIKE';
@@ -344,7 +346,7 @@ function RideAppScreen() {
   const [ignoredRides, setIgnoredRides] = useState<string[]>([]);
   const [userBookedRide, setUserBookedRide] = useState<Ride | null>(null);
   const [currentRide, setCurrentRide] = useState<Ride | null>(null);
-  const [driverVehicle, setDriverVehicle] = useState<RideType | null>(null);
+  const [driverVehicle, setDriverVehicle] = useState<DriverVehicleType | null>(null);
   const [fares, setFares] = useState({ Bike: 0, Auto: 0, Cab: 0, ShareAuto: 0, Parcel: 0 });
   const [otpInput, setOtpInput] = useState('');
   const [showDetails, setShowDetails] = useState(false);
@@ -379,6 +381,7 @@ function RideAppScreen() {
   const [showShareAutoFallback, setShowShareAutoFallback] = useState(false);
   const [shareAutoFallbackReason, setShareAutoFallbackReason] = useState('');
   const shareAutoTimersRef = useRef<{ search?: ReturnType<typeof setTimeout>; fallback?: ReturnType<typeof setTimeout> }>({});
+  const shareAutoMatchInFlightRef = useRef(false);
   const shareAutoPulse = useRef(new Animated.Value(0)).current;
   const [shareAutoElapsed, setShareAutoElapsed] = useState(0);
   const [showShareAutoTerms, setShowShareAutoTerms] = useState(false);
@@ -641,30 +644,70 @@ function RideAppScreen() {
   };
 
   const findShareAutoMatch = (selfPassenger: PoolPassenger, candidates: PoolPassenger[]): ShareAutoMatchResult | null => {
-    const aMatches: ShareAutoMatchResult[] = [];
-    const bMatches: ShareAutoMatchResult[] = [];
+    const getBestMatchForWay = (way: 'A' | 'B'): ShareAutoMatchResult | null => {
+      const fullMatches: ShareAutoMatchResult[] = [];
 
-    for (let i = 0; i < candidates.length; i += 1) {
-      for (let j = i + 1; j < candidates.length; j += 1) {
-        const group = [selfPassenger, candidates[i], candidates[j]];
-        if (isAWayGroup(group)) {
-          const score = getClusterRadiusKm(group.map((p) => p.pickup)) + getClusterRadiusKm(group.map((p) => p.drop));
-          aMatches.push({ way: 'A', passengers: [candidates[i], candidates[j]], score });
-        }
-        if (isBWayGroup(group)) {
-          bMatches.push({ way: 'B', passengers: [candidates[i], candidates[j]], score: getBWayScore(group) });
+      for (let i = 0; i < candidates.length; i += 1) {
+        for (let j = i + 1; j < candidates.length; j += 1) {
+          const group = [selfPassenger, candidates[i], candidates[j]];
+          if (way === 'A' && isAWayGroup(group)) {
+            const score = getClusterRadiusKm(group.map((p) => p.pickup)) + getClusterRadiusKm(group.map((p) => p.drop));
+            fullMatches.push({ way: 'A', passengers: [candidates[i], candidates[j]], score });
+          }
+          if (way === 'B' && isBWayGroup(group)) {
+            fullMatches.push({ way: 'B', passengers: [candidates[i], candidates[j]], score: getBWayScore(group) });
+          }
         }
       }
-    }
 
-    if (aMatches.length > 0) {
-      return aMatches.sort((x, y) => x.score - y.score)[0];
-    }
-    if (bMatches.length > 0) {
-      return bMatches.sort((x, y) => x.score - y.score)[0];
-    }
+      if (fullMatches.length > 0) {
+        return fullMatches.sort((x, y) => x.score - y.score)[0];
+      }
 
-    return null;
+      if (way === 'A') {
+        const aCandidates = candidates
+          .filter((passenger) => isAWayGroup([selfPassenger, passenger]))
+          .sort((x, y) => calcDist(selfPassenger.pickup, x.pickup) - calcDist(selfPassenger.pickup, y.pickup));
+
+        if (aCandidates.length > 0) {
+          return { way: 'A', passengers: [aCandidates[0]], score: calcDist(selfPassenger.pickup, aCandidates[0].pickup) };
+        }
+      } else {
+        const bCandidates = candidates
+          .filter((passenger) => isBWayGroup([selfPassenger, passenger]))
+          .sort((x, y) => {
+            const xEta = calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, x.pickup));
+            const yEta = calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, y.pickup));
+            return xEta - yEta;
+          });
+
+        if (bCandidates.length > 0) {
+          return { way: 'B', passengers: [bCandidates[0]], score: calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, bCandidates[0].pickup)) };
+        }
+      }
+
+      return null;
+    };
+
+    const chooseBetterMatch = (current: ShareAutoMatchResult | null, next: ShareAutoMatchResult | null) => {
+      if (!current) return next;
+      if (!next) return current;
+
+      const currentCount = current.passengers.length;
+      const nextCount = next.passengers.length;
+
+      if (currentCount !== nextCount) {
+        return nextCount > currentCount ? next : current;
+      }
+
+      if (current.way !== next.way) {
+        return current.way === 'A' ? current : next;
+      }
+
+      return next.score < current.score ? next : current;
+    };
+
+    return chooseBetterMatch(getBestMatchForWay('A'), getBestMatchForWay('B'));
   };
 
   const findPartialShareAuto = (selfPassenger: PoolPassenger, candidates: PoolPassenger[]) => {
@@ -1048,14 +1091,7 @@ function RideAppScreen() {
         };
 
         const matched = findShareAutoMatch(selfPassenger, candidates);
-        const partial = !matched ? findPartialShareAuto(selfPassenger, candidates) : null;
-        if (matched) {
-          setShareAutoFoundMembers(2);
-        } else if (partial) {
-          setShareAutoFoundMembers(1);
-        } else {
-          setShareAutoFoundMembers(0);
-        }
+        setShareAutoFoundMembers(matched ? matched.passengers.length : 0);
       } catch {
         setShareAutoFoundMembers(0);
       }
@@ -1079,12 +1115,42 @@ function RideAppScreen() {
     return calcDist(ride.drop, driverDestinationMarker) <= DRIVER_DESTINATION_MARKER_RADIUS_KM;
   };
 
-  const isDriverEligibleForRide = (ride: Ride) => ride.type === driverVehicle || (ride.type === 'Parcel' && driverVehicle === 'Bike');
+  const isDriverEligibleForRide = (ride: Ride) => (
+    ride.type === driverVehicle ||
+    (driverVehicle === 'Auto' && ride.type === 'ShareAuto') ||
+    (ride.type === 'Parcel' && driverVehicle === 'Bike')
+  );
 
   const visibleDriverRides = (driverOnline ? rides : [])
     .filter((ride) => isDriverEligibleForRide(ride) && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
     .filter((ride) => isWithinDriverDestinationMarkerRadius(ride))
     .filter((ride) => ride.type !== 'ShareAuto' || !location || getDistanceFromDriver(ride) <= 3)
+    .reduce((list, ride) => {
+      if (ride.type !== 'ShareAuto') {
+        list.push(ride);
+        return list;
+      }
+
+      const groupKey = ride.shareAutoGroupKey || (ride.shareAutoPassengerIds || []).slice().sort().join('|');
+      const existingIndex = list.findIndex((item) => {
+        if (item.type !== 'ShareAuto') return false;
+        const itemKey = item.shareAutoGroupKey || (item.shareAutoPassengerIds || []).slice().sort().join('|');
+        return itemKey === groupKey;
+      });
+
+      if (existingIndex === -1) {
+        list.push(ride);
+        return list;
+      }
+
+      const existing = list[existingIndex];
+      const existingCreated = existing.createdAt?.toMillis?.() || 0;
+      const nextCreated = ride.createdAt?.toMillis?.() || 0;
+      if (nextCreated > existingCreated) {
+        list[existingIndex] = ride;
+      }
+      return list;
+    }, [] as Ride[])
     .sort((a, b) => {
       const stageDiff = getDriverNotificationStage(a) - getDriverNotificationStage(b);
       if (stageDiff !== 0) return stageDiff;
@@ -1304,7 +1370,13 @@ function RideAppScreen() {
     const init = async () => {
       try {
         const savedVehicle = await AsyncStorage.getItem('driver_vehicle');
-        if (mounted && savedVehicle) setDriverVehicle(savedVehicle as RideType);
+        if (mounted && savedVehicle) {
+          if (savedVehicle === 'Bike' || savedVehicle === 'Auto' || savedVehicle === 'Cab') {
+            setDriverVehicle(savedVehicle as DriverVehicleType);
+          } else if (savedVehicle === 'ShareAuto') {
+            setDriverVehicle('Auto');
+          }
+        }
 
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
@@ -1592,106 +1664,138 @@ function RideAppScreen() {
   useEffect(() => {
     if (!shareAutoSearchActive || !shareAutoPoolId) return;
 
-    const finalizeShareAuto = async (isFinalAttempt: boolean) => {
-      if (!pickupCoords || !destCoords || !profileName || !profilePhone) return;
+    const scanShareAutoMatch = async (options: { allowPartialMatch: boolean; isFallbackAttempt: boolean }) => {
+      if (!pickupCoords || !destCoords || !profileName || !profilePhone || shareAutoMatchInFlightRef.current) return;
 
-      const poolSnapshot = await getDocs(query(collection(db, 'shareAutoPools'), where('status', '==', 'searching')));
-      const allPools = poolSnapshot.docs.map((d) => ({ id: d.id, ...d.data() } as ShareAutoPool));
-      const candidates = allPools
-        .filter((pool) => pool.id !== shareAutoPoolId)
-        .map(toPoolPassenger);
+      shareAutoMatchInFlightRef.current = true;
+      try {
+        const poolSnapshot = await getDocs(query(collection(db, 'shareAutoPools'), where('status', '==', 'searching')));
+        const allPools = poolSnapshot.docs.map((d) => ({ id: d.id, ...d.data() } as ShareAutoPool));
+        const candidates = allPools
+          .filter((pool) => pool.id !== shareAutoPoolId)
+          .map(toPoolPassenger);
 
-      const selfPassenger: PoolPassenger = {
-        id: currentUserId,
-        name: profileName,
-        phone: profilePhone,
-        pickup: pickupCoords,
-        drop: destCoords,
-        pickupAddr: pickupInput,
-        dropAddr: destination,
-      };
-
-      const matched = findShareAutoMatch(selfPassenger, candidates);
-      const partial = !matched ? findPartialShareAuto(selfPassenger, candidates) : null;
-
-      if (matched || (isFinalAttempt && partial)) {
-        setShowShareAutoGame(false);
-        setShareAutoGamePausedByRide(true);
-
-        const selectedPassengers = matched
-          ? [selfPassenger, ...matched.passengers]
-          : [selfPassenger, partial!.passenger];
-
-        const passengerDistances = selectedPassengers.map((p) => calcDist(p.pickup, p.drop));
-        const passengerCount = selectedPassengers.length;
-        const baseDistance = passengerDistances.reduce((sum, x) => sum + x, 0) / passengerCount;
-        const baseFare = getShareAutoFare(baseDistance, passengerCount);
-
-        const passengerFares = passengerDistances.map((distance) => {
-          const ratio = Math.max(0.85, Math.min(1.2, distance / Math.max(baseDistance, 0.5)));
-          return Math.round(baseFare * ratio);
-        });
-        const passengerEncryptedOtps = selectedPassengers.map(() => encryptOTP(generateOTP()));
-
-        const rideData: Ride = {
-          type: 'ShareAuto',
-          fare: passengerFares[0],
-          baseFare: passengerFares[0],
-          tip: 0,
-          distance: passengerDistances[0],
+        const selfPassenger: PoolPassenger = {
+          id: currentUserId,
+          name: profileName,
+          phone: profilePhone,
           pickup: pickupCoords,
           drop: destCoords,
           pickupAddr: pickupInput,
           dropAddr: destination,
-          encryptedOTP: encryptOTP(generateOTP()),
-          passengerId: currentUserId,
-          passengerName: profileName,
-          passengerPhone: profilePhone,
-          shareAutoPassengerIds: selectedPassengers.map((p) => p.id),
-          shareAutoPassengerNames: selectedPassengers.map((p) => p.name),
-          shareAutoPassengerPhones: selectedPassengers.map((p) => p.phone),
-          shareAutoPassengerPickups: selectedPassengers.map((p) => p.pickup),
-          shareAutoPassengerDrops: selectedPassengers.map((p) => p.drop),
-          shareAutoPassengerPickupAddrs: selectedPassengers.map((p) => p.pickupAddr || 'Pickup'),
-          shareAutoPassengerDropAddrs: selectedPassengers.map((p) => p.dropAddr || 'Drop'),
-          shareAutoPassengerDistances: passengerDistances,
-          shareAutoPassengerFares: passengerFares,
-          shareAutoPassengerEncryptedOTPs: passengerEncryptedOtps,
-          shareAutoPickupCompletedIds: [],
-          shareAutoDropCompletedIds: [],
-          shareAutoSeats: passengerCount,
-          shareAutoMatchWay: matched?.way || partial?.way || 'A',
-          shareAutoRouteNote: matched
-            ? `${matched.way}-Way group formed. A-Way is always prioritized when available.`
-            : `${partial?.way}-Way partial group formed with 2 passengers.`,
-          status: 'waiting',
-          createdAt: Timestamp.now()
         };
 
-        const ref = await addDoc(collection(db, 'rides'), rideData);
-        const selectedPassengerIds = new Set(selectedPassengers.map((p) => p.id));
-        const docsToDelete = allPools.filter((pool) => selectedPassengerIds.has(pool.passengerId));
-        await Promise.all(docsToDelete.map((docSnap) => deleteDoc(doc(db, 'shareAutoPools', docSnap.id!)).catch(() => undefined)));
-        setUserBookedRide({ ...rideData, id: ref.id });
-        resetShareAutoSearch();
-        return;
-      }
+        const matched = findShareAutoMatch(selfPassenger, candidates);
+        const selectedPassengers = matched ? [selfPassenger, ...matched.passengers] : [];
+        const passengerCount = selectedPassengers.length;
+        setShareAutoFoundMembers(passengerCount);
 
-      if (isFinalAttempt) {
-        await deleteDoc(doc(db, 'shareAutoPools', shareAutoPoolId)).catch(() => undefined);
-        startShareAutoFallback('No matching ShareAuto passengers were found within 3 minutes. Bike, Auto, or Cab is recommended for a faster trip.');
+        if (matched && (passengerCount >= 3 || options.allowPartialMatch)) {
+          setShowShareAutoGame(false);
+          setShareAutoGamePausedByRide(true);
+
+          const passengerDistances = selectedPassengers.map((p) => calcDist(p.pickup, p.drop));
+          const baseDistance = passengerDistances.reduce((sum, x) => sum + x, 0) / passengerCount;
+          const baseFare = getShareAutoFare(baseDistance, passengerCount);
+
+          const passengerFares = passengerDistances.map((distance) => {
+            const ratio = Math.max(0.85, Math.min(1.2, distance / Math.max(baseDistance, 0.5)));
+            return Math.round(baseFare * ratio);
+          });
+          const totalFare = passengerFares.reduce((sum, fare) => sum + fare, 0);
+          const shareAutoGroupKey = selectedPassengers.map((p) => p.id).slice().sort().join('|');
+          const passengerEncryptedOtps = selectedPassengers.map(() => encryptOTP(generateOTP()));
+
+          const waitingRidesSnapshot = await getDocs(query(collection(db, 'rides'), where('status', '==', 'waiting')));
+          const existingGroupedRide = waitingRidesSnapshot.docs
+            .map((d) => ({ id: d.id, ...d.data() } as Ride))
+            .find((ride) => ride.type === 'ShareAuto' && (
+              ride.shareAutoGroupKey === shareAutoGroupKey ||
+              ((ride.shareAutoPassengerIds || []).slice().sort().join('|') === shareAutoGroupKey)
+            ));
+
+          if (existingGroupedRide?.id) {
+            await deleteDoc(doc(db, 'shareAutoPools', shareAutoPoolId)).catch(() => undefined);
+            setUserBookedRide(existingGroupedRide);
+            Alert.alert('Congratulations', 'All passengers found. Waiting for driver acceptance.');
+            resetShareAutoSearch();
+            return;
+          }
+
+          const rideData: Ride = {
+            type: 'ShareAuto',
+            fare: totalFare,
+            baseFare: totalFare,
+            tip: 0,
+            distance: passengerDistances.reduce((sum, x) => sum + x, 0) / passengerDistances.length,
+            pickup: pickupCoords,
+            drop: destCoords,
+            pickupAddr: pickupInput,
+            dropAddr: destination,
+            encryptedOTP: encryptOTP(generateOTP()),
+            passengerId: currentUserId,
+            passengerName: profileName,
+            passengerPhone: profilePhone,
+            shareAutoPassengerIds: selectedPassengers.map((p) => p.id),
+            shareAutoPassengerNames: selectedPassengers.map((p) => p.name),
+            shareAutoPassengerPhones: selectedPassengers.map((p) => p.phone),
+            shareAutoPassengerPickups: selectedPassengers.map((p) => p.pickup),
+            shareAutoPassengerDrops: selectedPassengers.map((p) => p.drop),
+            shareAutoPassengerPickupAddrs: selectedPassengers.map((p) => p.pickupAddr || 'Pickup'),
+            shareAutoPassengerDropAddrs: selectedPassengers.map((p) => p.dropAddr || 'Drop'),
+            shareAutoPassengerDistances: passengerDistances,
+            shareAutoPassengerFares: passengerFares,
+            shareAutoPassengerEncryptedOTPs: passengerEncryptedOtps,
+            shareAutoPickupCompletedIds: [],
+            shareAutoDropCompletedIds: [],
+            shareAutoSeats: passengerCount,
+            shareAutoGroupKey,
+            shareAutoMatchWay: matched.way,
+            shareAutoRouteNote: `${matched.way}-Way group formed. A-Way is always prioritized when available.`,
+            status: 'waiting',
+            createdAt: Timestamp.now()
+          };
+
+          const ref = await addDoc(collection(db, 'rides'), rideData);
+          const selectedPassengerIds = new Set(selectedPassengers.map((p) => p.id));
+          const docsToDelete = allPools.filter((pool) => selectedPassengerIds.has(pool.passengerId));
+          await Promise.all(docsToDelete.map((docSnap) => deleteDoc(doc(db, 'shareAutoPools', docSnap.id!)).catch(() => undefined)));
+          setUserBookedRide({ ...rideData, id: ref.id });
+          Alert.alert('Congratulations', 'All passengers found. Waiting for driver acceptance.');
+          resetShareAutoSearch();
+          return;
+        }
+
+        if (options.isFallbackAttempt) {
+          await deleteDoc(doc(db, 'shareAutoPools', shareAutoPoolId)).catch(() => undefined);
+          if (!matched) {
+            startShareAutoFallback('No matching ShareAuto passengers were found within 3 minutes. Bike, Auto, or Cab is recommended for a faster trip.');
+          }
+        }
+      } finally {
+        shareAutoMatchInFlightRef.current = false;
       }
     };
 
+    const poolQuery = query(collection(db, 'shareAutoPools'), where('status', '==', 'searching'));
+    const unsubPoolListener = onSnapshot(poolQuery, () => {
+      void scanShareAutoMatch({ allowPartialMatch: false, isFallbackAttempt: false });
+    });
+
+    void scanShareAutoMatch({ allowPartialMatch: false, isFallbackAttempt: false });
+
     shareAutoTimersRef.current.search = setTimeout(() => {
-      finalizeShareAuto(false);
-    }, 2 * 60 * 1000);
+      void scanShareAutoMatch({ allowPartialMatch: true, isFallbackAttempt: false });
+    }, 90 * 1000);
 
     shareAutoTimersRef.current.fallback = setTimeout(() => {
-      finalizeShareAuto(true);
+      void scanShareAutoMatch({ allowPartialMatch: true, isFallbackAttempt: true });
     }, 3 * 60 * 1000);
 
-    return () => clearShareAutoTimers();
+    return () => {
+      unsubPoolListener();
+      clearShareAutoTimers();
+    };
   }, [shareAutoSearchActive, shareAutoPoolId, pickupCoords, destCoords, profileName, profilePhone, pickupInput, destination, fares.ShareAuto, currentUserId]);
 
   useEffect(() => {
@@ -1865,6 +1969,11 @@ function RideAppScreen() {
   const getUserPerspectiveFare = (ride: Ride | null) => {
     if (!ride) return 0;
     if (isComboParcelSender(ride)) return ride.comboParcelFare || ride.fare;
+    if (ride.type === 'ShareAuto') {
+      const shareIndex = ride.shareAutoPassengerIds?.findIndex((id) => id === currentUserId) ?? -1;
+      const shareFare = shareIndex >= 0 ? ride.shareAutoPassengerFares?.[shareIndex] : null;
+      if (typeof shareFare === 'number') return shareFare;
+    }
     return ride.fare;
   };
 
@@ -2587,6 +2696,25 @@ function RideAppScreen() {
 
   const handleShareDropComplete = async () => {
     if (!currentRide?.id || !selectedSharePassengerId) return;
+
+    const passengerIds = currentRide.shareAutoPassengerIds || [];
+    const passengerDrops = currentRide.shareAutoPassengerDrops || [];
+    const passengerNames = currentRide.shareAutoPassengerNames || [];
+    const selectedIndex = passengerIds.findIndex((id) => id === selectedSharePassengerId);
+    const selectedDrop = selectedIndex >= 0 ? (passengerDrops[selectedIndex] || currentRide.drop) : currentRide.drop;
+    const selectedName = selectedIndex >= 0 ? (passengerNames[selectedIndex] || 'Passenger') : 'Passenger';
+
+    if (!location) {
+      Alert.alert('Location needed', 'Driver location is required to complete passenger drop.');
+      return;
+    }
+
+    const distanceToDrop = calcDist(location, selectedDrop);
+    if (distanceToDrop > 1.5) {
+      Alert.alert('Too far from drop', `Move closer to ${selectedName}'s drop point. You can complete this drop within 1.5 km.`);
+      return;
+    }
+
     const done = new Set(currentRide.shareAutoDropCompletedIds || []);
     done.add(selectedSharePassengerId);
     const allPassengerCount = currentRide.shareAutoPassengerIds?.length || 0;
@@ -2973,11 +3101,8 @@ function RideAppScreen() {
                   </View>
                 ) : (userBookedRide.type === 'ShareAuto' && (userBookedRide.shareAutoSeats || 0) >= 3) ? (
                   <View style={styles.driverArrivingCard}>
-                    <Text style={[styles.searchingText, {color: '#6B4E00'}]}>Passengers matched. Your OTP is ready.</Text>
-                    <View style={styles.otpClearBox}>
-                        <Text style={styles.otpLabel}>SHARE OTP TO START</Text>
-                      <Text style={styles.otpValue}>{getCurrentUserRideOtp(userBookedRide)}</Text>
-                    </View>
+                    <Text style={[styles.searchingText, {color: '#6B4E00'}]}>Congratulations! All passengers found.</Text>
+                    <Text style={{color:'#8E8E93', marginTop: 4, textAlign: 'center'}}>Waiting for driver acceptance. OTP will appear after the driver accepts.</Text>
                     <Pressable style={styles.reasonBtn} onPress={() => setShowShareAutoGame(true)}>
                       <Text>Continue mini game</Text>
                     </Pressable>
@@ -3001,7 +3126,7 @@ function RideAppScreen() {
                 <View style={{padding: 10}}>
                     <Text style={styles.sectionTitle}>Pick your vehicle</Text>
                     <View style={styles.grid}>
-                        {(['Bike', 'Auto', 'Cab', 'ShareAuto'] as RideType[]).map(v => (
+                        {(['Bike', 'Auto', 'Cab'] as DriverVehicleType[]).map(v => (
                             <Pressable
                               key={v}
                               style={styles.rideCard}
@@ -3329,7 +3454,7 @@ function RideAppScreen() {
                                 const summary = getShareNotificationSummary(r);
                                 return (
                                   <View style={styles.shareSingleNotifCard}>
-                                    <Text style={styles.shareSingleNotifTitle}>Share Ride • {r.shareAutoSeats || 0} passengers</Text>
+                                    <Text style={styles.shareSingleNotifTitle}>Priority Share Ride • {r.shareAutoSeats || 0} passengers</Text>
                                     <Text style={styles.shareSingleNotifMeta}>Driver can earn: ₹{summary.totalFare}</Text>
                                     <Text style={styles.shareSingleNotifMeta}>Total travel: {summary.totalDistance.toFixed(1)} km</Text>
                                     <Text style={styles.shareSingleNotifMeta}>From: {summary.fromAddr}</Text>
@@ -3592,7 +3717,7 @@ function RideAppScreen() {
             <Text style={styles.shareAutoOrbIcon}>👥</Text>
           </Animated.View>
           <Text style={styles.shareAutoTitle}>Looking for passengers heading the same way</Text>
-          <Text style={styles.shareAutoSubtitle}>We search for up to 2 minutes, then confirm a group or suggest a faster option after 3 minutes.</Text>
+          <Text style={styles.shareAutoSubtitle}>We confirm a group as soon as 3 passengers are found, otherwise keep searching up to 3 minutes.</Text>
 
           <View style={styles.shareAutoTimerCard}>
             <Text style={styles.shareAutoTimerLabel}>Searching time</Text>
@@ -3601,7 +3726,11 @@ function RideAppScreen() {
             {!shareAutoPoolId && <Text style={styles.shareAutoSetupHint}>Initializing secure matching...</Text>}
             {shareAutoPoolId && (
               <Text style={styles.shareAutoFoundHint}>
-                {shareAutoFoundMembers === 2 ? '2 members found' : 'Searching for members...'}
+                {shareAutoFoundMembers >= 3
+                  ? 'Congratulations! All passengers found.'
+                  : shareAutoFoundMembers === 2
+                    ? '2 passengers found'
+                    : 'Searching for members...'}
               </Text>
             )}
             {shareAutoElapsed >= 120 && shareAutoFoundMembers === 0 && (
@@ -3929,8 +4058,20 @@ const styles = StyleSheet.create({
   shareDriverTaskTitle: { color: '#4B3B00', fontWeight: '900', marginBottom: 4 },
   shareDriverTaskMeta: { color: '#6B5A14', fontSize: 12, marginBottom: 2 },
   shareDriverActionCard: { backgroundColor: '#FFFBE8', borderColor: '#E8C549', borderWidth: 1, borderRadius: 12, padding: 10 },
-  shareSingleNotifCard: { backgroundColor: '#FFF6CC', borderColor: '#E8C549', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 6 },
-  shareSingleNotifTitle: { color: '#6B4E00', fontWeight: '900', marginBottom: 3 },
+  shareSingleNotifCard: {
+    backgroundColor: '#FFF0A8',
+    borderColor: '#C99C18',
+    borderWidth: 1.5,
+    borderRadius: 12,
+    padding: 10,
+    marginTop: 6,
+    shadowColor: '#7A5C00',
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  shareSingleNotifTitle: { color: '#5E4300', fontWeight: '900', marginBottom: 3 },
   shareSingleNotifMeta: { color: '#6B5A14', fontSize: 12 },
   parcelSingleNotifCard: { backgroundColor: '#EAF8EE', borderColor: '#8BC59B', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 6 },
   parcelSingleNotifTitle: { color: '#1B5E20', fontWeight: '900', marginBottom: 3 },
@@ -4054,7 +4195,7 @@ const styles = StyleSheet.create({
   gameMeta: { color: '#6B4E00', fontWeight: '800', marginBottom: 8 },
   gameHint: { color: '#7A5C00', marginBottom: 10 },
   gamePauseHint: { color: '#A43412', marginBottom: 10, fontWeight: '700' },
-  gameArena: { flex: 1, backgroundColor: '#FFF3C4', borderWidth: 1, borderColor: '#E8C549', borderRadius: 18, marginTop: 12, position: 'relative', overflow: 'hidden' },
+  gameArena: { flex: 1, backgroundColor: '#d5c4ff', borderWidth: 1, borderColor: '#E8C549', borderRadius: 18, marginTop: 12, position: 'relative', overflow: 'hidden' },
   gameFloatingTarget: { position: 'absolute', transform: [{ translateX: -18 }, { translateY: -18 }], width: 52, height: 52, borderRadius: 26, backgroundColor: '#FFD84D', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#B88900' },
   gameZombieTarget: { backgroundColor: '#FFD6D6', borderColor: '#A43412' },
   gameTargetText: { fontSize: 28 }
