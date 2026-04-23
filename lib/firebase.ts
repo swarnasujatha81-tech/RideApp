@@ -2,12 +2,13 @@ import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'missing-api-key',
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'missing-auth-domain',
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'missing-project-id',
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'missing-storage-bucket',
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || 'missing-sender-id',
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || 'missing-app-id',
+  apiKey: 'AIzaSyDPcG1HOj5c4_HSgapAjzAu5tXPMHXekTg',
+  authDomain: 'share-it-9a030.firebaseapp.com',
+  projectId: 'share-it-9a030',
+  storageBucket: 'share-it-9a030.firebasestorage.app',
+  messagingSenderId: '100914160826',
+  appId: '1:100914160826:web:e1ab817586378e67e9ce83',
+  measurementId: 'G-6FFJRK004F',
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);

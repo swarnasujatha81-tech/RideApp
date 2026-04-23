@@ -40,12 +40,13 @@ import {
 
 /* ================= FIREBASE CONFIG ================= */
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'missing-api-key',
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'missing-auth-domain',
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'missing-project-id',
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'missing-storage-bucket',
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || 'missing-sender-id',
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || 'missing-app-id',
+  apiKey: 'AIzaSyDPcG1HOj5c4_HSgapAjzAu5tXPMHXekTg',
+  authDomain: 'share-it-9a030.firebaseapp.com',
+  projectId: 'share-it-9a030',
+  storageBucket: 'share-it-9a030.firebasestorage.app',
+  messagingSenderId: '100914160826',
+  appId: '1:100914160826:web:e1ab817586378e67e9ce83',
+  measurementId: 'G-6FFJRK004F',
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -390,6 +391,7 @@ function RideAppScreen() {
   const [earnRideType, setEarnRideType] = useState<'Bike' | 'Auto' | 'Cab'>('Bike');
   const [chatTargetPassengerId, setChatTargetPassengerId] = useState<string>('ALL');
   const arrivalAutoPulse = useRef(new Animated.Value(0)).current;
+  const driverPromoPulse = useRef(new Animated.Value(0)).current;
   const [shareAutoFoundMembers, setShareAutoFoundMembers] = useState(0);
   const autoCancelInProgressRef = useRef(false);
   const lastUserRideStateRef = useRef<{ id: string; status: Ride['status'] } | null>(null);
@@ -1765,6 +1767,24 @@ function RideAppScreen() {
   }, [shareAutoSearchActive, shareAutoPulse]);
 
   useEffect(() => {
+    if (mode !== 'DRIVER') {
+      driverPromoPulse.stopAnimation();
+      driverPromoPulse.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(driverPromoPulse, { toValue: 1, duration: 1000, useNativeDriver: true }),
+        Animated.timing(driverPromoPulse, { toValue: 0, duration: 1000, useNativeDriver: true }),
+      ])
+    );
+
+    loop.start();
+    return () => loop.stop();
+  }, [mode, driverPromoPulse]);
+
+  useEffect(() => {
     let interval: any;
     if (userBookedRide?.status === 'waiting') {
       interval = setInterval(() => {
@@ -2795,6 +2815,24 @@ function RideAppScreen() {
                    thumbColor={driverDestinationFilterEnabled ? '#16A34A' : '#F8FAFC'}
                  />
                </View>
+
+               <View style={styles.driverPromoFooter}>
+                 <Animated.View
+                   style={[
+                     styles.driverPromoPulse,
+                     {
+                       opacity: driverPromoPulse.interpolate({ inputRange: [0, 1], outputRange: [0.15, 0.45] }),
+                       transform: [
+                         {
+                           scale: driverPromoPulse.interpolate({ inputRange: [0, 1], outputRange: [0.98, 1.04] }),
+                         },
+                       ],
+                     },
+                   ]}
+                 />
+                 <Text style={styles.driverPromoTitle}>Share-It driver app</Text>
+                 <Text style={styles.driverPromoText}>Stay connected, accept rides faster, and keep passengers happy with smooth in-app driver tools.</Text>
+               </View>
             </ScrollView>
           </View>
       )}
@@ -2982,7 +3020,14 @@ function RideAppScreen() {
                 <View style={{padding: 10}}>
                     <Text style={styles.sectionTitle}>Identity Setup</Text>
                     <TextInput style={styles.input} placeholder="Full Name" value={driverName} onChangeText={setDriverName} />
-                    <TextInput style={styles.input} placeholder="Phone" value={driverPhone} onChangeText={setDriverPhone} keyboardType="phone-pad" />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="10-digit Indian phone"
+                      value={driverPhone}
+                      onChangeText={(v) => setDriverPhone(v.replace(/\D/g, '').slice(0, 10))}
+                      keyboardType="phone-pad"
+                      maxLength={10}
+                    />
                     <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={setVehiclePlate} />
                     
                     <View style={{marginVertical: 12, alignItems: 'center'}}>
@@ -3001,7 +3046,22 @@ function RideAppScreen() {
                       </Pressable>
                     </View>
                     
-                    <Pressable style={styles.primaryButton} onPress={() => (driverPhone && vehiclePlate && driverName) ? setIsIdentitySet(true) : Alert.alert("Required", "Fill all details")}><Text style={styles.buttonText}>Go Online</Text></Pressable>
+                    <Pressable
+                      style={styles.primaryButton}
+                      onPress={() => {
+                        if (!driverName || !driverPhone || !vehiclePlate) {
+                          Alert.alert('Required', 'Fill all details.');
+                          return;
+                        }
+                        if (!isValidMobile(driverPhone)) {
+                          Alert.alert('Invalid mobile', 'Enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9.');
+                          return;
+                        }
+                        setIsIdentitySet(true);
+                      }}
+                    >
+                      <Text style={styles.buttonText}>Go Online</Text>
+                    </Pressable>
                 </View>
             ) : currentRide ? (
               <View>
@@ -3878,6 +3938,10 @@ const styles = StyleSheet.create({
   driverFilterCard: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1', borderWidth: 1, borderRadius: 12, padding: 10, marginTop: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   driverFilterTitle: { color: '#0F172A', fontWeight: '800' },
   driverFilterHint: { color: '#475569', fontSize: 12, marginTop: 2 },
+  driverPromoFooter: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 18, padding: 14, marginTop: 12, alignItems: 'center', overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB' },
+  driverPromoPulse: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#007AFF', borderRadius: 18 },
+  driverPromoTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
+  driverPromoText: { fontSize: 13, color: '#475569', textAlign: 'center', lineHeight: 18 },
   notificationCard: { backgroundColor: '#fff', borderRadius: 15, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#007AFF' },
   notifHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   accButton: { flex: 2, backgroundColor: '#34C759', padding: 12, borderRadius: 10, alignItems: 'center' },
