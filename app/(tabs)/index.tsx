@@ -10,7 +10,7 @@ import {
   signOut
 } from 'firebase/auth';
 import {
-  addDoc, collection,
+  addDoc, arrayUnion, collection,
   deleteDoc,
   deleteField,
   doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
@@ -90,6 +90,22 @@ interface Ride {
   shareAutoPassengerEncryptedOTPs?: string[];
   shareAutoPickupCompletedIds?: string[];
   shareAutoDropCompletedIds?: string[];
+  shareAutoCancelledPassengerIds?: string[];
+  shareAutoFareRebalance?: {
+    active: boolean;
+    cancelledPassengerId: string;
+    cancelledPassengerName?: string;
+    chargedFare: number;
+    remainingFare: number;
+    remainingPassengerIds: string[];
+    extraFares: number[];
+    newFares: number[];
+    totalNewFare: number;
+    requestedAtMs: number;
+    driverApproved?: boolean;
+    passengerApprovedIds?: string[];
+    passengerDeclinedIds?: string[];
+  };
   shareAutoSeats?: number;
   shareAutoGroupKey?: string;
   shareAutoMatchWay?: 'A' | 'B';
@@ -349,6 +365,8 @@ function RideAppScreen() {
   const [driverVehicle, setDriverVehicle] = useState<DriverVehicleType | null>(null);
   const [fares, setFares] = useState({ Bike: 0, Auto: 0, Cab: 0, ShareAuto: 0, Parcel: 0 });
   const [otpInput, setOtpInput] = useState('');
+  const lastFareRebalancePromptRef = useRef<number | null>(null);
+  const lastDriverFareRebalancePromptRef = useRef<number | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [showTipModal, setShowTipModal] = useState(false);
 
@@ -411,6 +429,180 @@ function RideAppScreen() {
 
   const currentUserId = auth.currentUser?.uid || '';
   const activeRide = mode === 'USER' ? userBookedRide : currentRide;
+
+  const updateRideSafely = async (
+    rideId: string | undefined,
+    payload: Record<string, unknown>,
+    onMissing?: () => void
+  ) => {
+    if (!rideId) return false;
+    try {
+      await updateDoc(doc(db, 'rides', rideId), payload as any);
+      return true;
+    } catch (error: any) {
+      const code = error?.code;
+      const message = String(error?.message || '');
+      if (code === 'not-found' || message.includes('No document to update')) {
+        onMissing?.();
+        return false;
+      }
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto') return;
+    const rebalance = userBookedRide.shareAutoFareRebalance;
+    if (!rebalance?.active) return;
+    if (!rebalance.remainingPassengerIds.includes(currentUserId)) return;
+    if (rebalance.passengerApprovedIds?.includes(currentUserId)) return;
+    if (rebalance.passengerDeclinedIds?.includes(currentUserId)) return;
+    if (lastFareRebalancePromptRef.current === rebalance.requestedAtMs) return;
+
+    lastFareRebalancePromptRef.current = rebalance.requestedAtMs;
+    const extraIndex = rebalance.remainingPassengerIds.findIndex((id) => id === currentUserId);
+    const extraFare = extraIndex >= 0 ? rebalance.extraFares[extraIndex] : 0;
+    const newFare = extraIndex >= 0 ? rebalance.newFares[extraIndex] : 0;
+    const totalFare = rebalance.totalNewFare + rebalance.chargedFare;
+    Alert.alert(
+      'Fare update',
+      `${rebalance.cancelledPassengerName || 'A passenger'} cancelled after OTP. Extra fare for you: ₹${extraFare}. New fare: ₹${newFare}. Total ride fare: ₹${totalFare}. Continue?`,
+      [
+        {
+          text: 'Decline',
+          style: 'destructive',
+          onPress: async () => {
+            await updateRideSafely(userBookedRide.id, {
+              'shareAutoFareRebalance.passengerDeclinedIds': arrayUnion(currentUserId),
+            }, () => {
+              setUserBookedRide(null);
+            });
+          },
+        },
+        {
+          text: 'Accept',
+          onPress: async () => {
+            await updateRideSafely(userBookedRide.id, {
+              'shareAutoFareRebalance.passengerApprovedIds': arrayUnion(currentUserId),
+            }, () => {
+              setUserBookedRide(null);
+            });
+          },
+        },
+      ]
+    );
+  }, [userBookedRide, currentUserId]);
+
+  useEffect(() => {
+    if (!currentRide?.id || currentRide.type !== 'ShareAuto') return;
+    const rebalance = currentRide.shareAutoFareRebalance;
+    if (!rebalance?.active || rebalance.driverApproved) return;
+    if (lastDriverFareRebalancePromptRef.current === rebalance.requestedAtMs) return;
+
+    lastDriverFareRebalancePromptRef.current = rebalance.requestedAtMs;
+    const totalFare = rebalance.totalNewFare + rebalance.chargedFare;
+    Alert.alert(
+      'Fare update request',
+      `${rebalance.cancelledPassengerName || 'A passenger'} cancelled after OTP. Total ride fare becomes ₹${totalFare}. Continue ride with updated fares?`,
+      [
+        {
+          text: 'Cancel Ride',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteDoc(doc(db, 'rides', currentRide.id!));
+            setCurrentRide(null);
+          },
+        },
+        {
+          text: 'Accept',
+          onPress: async () => {
+            await updateRideSafely(currentRide.id, {
+              'shareAutoFareRebalance.driverApproved': true,
+            }, () => {
+              setCurrentRide(null);
+            });
+          },
+        },
+      ]
+    );
+  }, [currentRide]);
+
+  useEffect(() => {
+    if (!currentRide?.id || currentRide.type !== 'ShareAuto') return;
+    const rebalance = currentRide.shareAutoFareRebalance;
+    if (!rebalance?.active) return;
+
+    if (rebalance.passengerDeclinedIds && rebalance.passengerDeclinedIds.length > 0) {
+      deleteDoc(doc(db, 'rides', currentRide.id!)).catch(() => {});
+      setCurrentRide(null);
+      return;
+    }
+
+    const allPassengerApproved = rebalance.remainingPassengerIds.every((id) => rebalance.passengerApprovedIds?.includes(id));
+    if (!rebalance.driverApproved || !allPassengerApproved) return;
+
+    const applyFareRebalance = async () => {
+      const ids = currentRide.shareAutoPassengerIds || [];
+      const names = currentRide.shareAutoPassengerNames || [];
+      const phones = currentRide.shareAutoPassengerPhones || [];
+      const pickups = currentRide.shareAutoPassengerPickups || [];
+      const drops = currentRide.shareAutoPassengerDrops || [];
+      const pickupAddrs = currentRide.shareAutoPassengerPickupAddrs || [];
+      const dropAddrs = currentRide.shareAutoPassengerDropAddrs || [];
+      const distances = currentRide.shareAutoPassengerDistances || [];
+
+      const filteredIndexes = ids
+        .map((id, index) => ({ id, index }))
+        .filter((item) => item.id !== rebalance.cancelledPassengerId)
+        .map((item) => item.index);
+
+      const nextIds = filteredIndexes.map((index) => ids[index]);
+      const nextNames = filteredIndexes.map((index) => names[index]);
+      const nextPhones = filteredIndexes.map((index) => phones[index]);
+      const nextPickups = filteredIndexes.map((index) => pickups[index]);
+      const nextDrops = filteredIndexes.map((index) => drops[index]);
+      const nextPickupAddrs = filteredIndexes.map((index) => pickupAddrs[index]);
+      const nextDropAddrs = filteredIndexes.map((index) => dropAddrs[index]);
+      const nextDistances = filteredIndexes.map((index) => distances[index]);
+
+      const nextFares = nextIds.map((id) => {
+        const matchIndex = rebalance.remainingPassengerIds.findIndex((pid) => pid === id);
+        return matchIndex >= 0 ? rebalance.newFares[matchIndex] : getSharePassengerFareById(currentRide, id);
+      });
+
+      const nextPickupDone = (currentRide.shareAutoPickupCompletedIds || []).filter((id) => id !== rebalance.cancelledPassengerId);
+      const nextDropDone = (currentRide.shareAutoDropCompletedIds || []).filter((id) => id !== rebalance.cancelledPassengerId);
+      const nextTotalFare = nextFares.reduce((sum, x) => sum + x, 0);
+      const nextGroupKey = nextIds.slice().sort().join('|');
+
+      await updateRideSafely(currentRide.id, {
+        shareAutoPassengerIds: nextIds,
+        shareAutoPassengerNames: nextNames,
+        shareAutoPassengerPhones: nextPhones,
+        shareAutoPassengerPickups: nextPickups,
+        shareAutoPassengerDrops: nextDrops,
+        shareAutoPassengerPickupAddrs: nextPickupAddrs,
+        shareAutoPassengerDropAddrs: nextDropAddrs,
+        shareAutoPassengerDistances: nextDistances,
+        shareAutoPassengerFares: nextFares,
+        shareAutoPickupCompletedIds: nextPickupDone,
+        shareAutoDropCompletedIds: nextDropDone,
+        shareAutoSeats: nextIds.length,
+        shareAutoGroupKey: nextGroupKey,
+        fare: nextTotalFare,
+        baseFare: nextTotalFare,
+        shareAutoFareRebalance: {
+          ...rebalance,
+          active: false,
+        },
+      }, () => {
+        setCurrentRide(null);
+      });
+    };
+
+    applyFareRebalance().catch(() => {});
+  }, [currentRide]);
+
   const getLocalDateKey = () => {
     const now = new Date();
     const y = now.getFullYear();
@@ -1015,6 +1207,13 @@ function RideAppScreen() {
     setShowShareAutoGame(false);
   };
 
+  useEffect(() => {
+    if (!shareAutoSearchActive) return;
+    if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto') return;
+    resetShareAutoSearch();
+    setShowShareAutoFallback(false);
+  }, [shareAutoSearchActive, userBookedRide?.id, userBookedRide?.type]);
+
   const startShareAutoFallback = (reason: string) => {
     setShareAutoFallbackReason(reason);
     setShowShareAutoFallback(true);
@@ -1592,7 +1791,9 @@ function RideAppScreen() {
 
   useEffect(() => {
     if (mode !== 'DRIVER' || !currentRide?.id || !location) return;
-    updateDoc(doc(db, 'rides', currentRide.id), { driverLocation: location }).catch(() => undefined);
+    updateRideSafely(currentRide.id, { driverLocation: location }, () => {
+      setCurrentRide(null);
+    }).catch(() => undefined);
   }, [mode, currentRide?.id, location]);
 
   useEffect(() => {
@@ -2049,7 +2250,9 @@ function RideAppScreen() {
   const handleTip = async (amt: number) => {
     if (!userBookedRide?.id) return;
     const newFare = userBookedRide.baseFare + amt;
-    await updateDoc(doc(db, 'rides', userBookedRide.id), { fare: newFare, tip: amt });
+    await updateRideSafely(userBookedRide.id, { fare: newFare, tip: amt }, () => {
+      setUserBookedRide(null);
+    });
     setSearchRadius(6.0); 
     setShowTipModal(false);
   };
@@ -2153,7 +2356,7 @@ function RideAppScreen() {
           calcDist(matchedBikeRide.pickup, matchedBikeRide.drop) +
           calcDist(matchedBikeRide.drop, destCoords);
 
-        await updateDoc(doc(db, 'rides', matchedBikeRide.id), {
+        await updateRideSafely(matchedBikeRide.id, {
           comboMode: 'PARCEL_PLUS_BIKE',
           comboParcelSenderId: currentUserId,
           comboParcelSenderName: profileName,
@@ -2169,6 +2372,8 @@ function RideAppScreen() {
           comboTotalDistance,
           comboStage: 'parcel_pickup',
           createdAt: Timestamp.now(),
+        }, () => {
+          Alert.alert('Ride unavailable', 'Matched bike ride is no longer available. Please retry.');
         });
 
         setUserBookedRide({
@@ -2497,7 +2702,10 @@ function RideAppScreen() {
       }
     }
 
-    await updateDoc(doc(db, 'rides', ride.id!), updatePayload);
+    await updateRideSafely(ride.id, updatePayload, () => {
+      setCurrentRide(null);
+      Alert.alert('Ride unavailable', 'This request was already closed or reassigned.');
+    });
   };
 
   const cancelRide = async (id: string, isDriver: boolean, reason?: string) => {
@@ -2525,7 +2733,7 @@ function RideAppScreen() {
                       }
                     }
 
-                    await updateDoc(rideRef, {
+                    await updateRideSafely(id, {
                       status: 'waiting',
                       cancelledBy: deleteField(),
                       driverId: null,
@@ -2533,6 +2741,8 @@ function RideAppScreen() {
                       driverName: '',
                       vehiclePlate: '',
                       driverLocation: deleteField()
+                    }, () => {
+                      setCurrentRide(null);
                     });
 
                     setCurrentRide(null);
@@ -2558,8 +2768,33 @@ function RideAppScreen() {
           const rideSnap = await getDoc(rideRef);
           if (rideSnap.exists()) {
             const rideData = { id: rideSnap.id, ...rideSnap.data() } as Ride;
+            const isShareAutoCancelEligible =
+              rideData.type === 'ShareAuto' &&
+              rideData.status !== 'waiting' &&
+              (rideData.shareAutoPassengerIds || []).length > 1 &&
+              (rideData.shareAutoPassengerIds || []).includes(currentUserId) &&
+              !rideData.shareAutoFareRebalance?.active;
+
+            if (isShareAutoCancelEligible) {
+              const rebalance = buildShareAutoFareRebalance(rideData, currentUserId);
+              await updateRideSafely(id, {
+                shareAutoFareRebalance: rebalance,
+                shareAutoCancelledPassengerIds: arrayUnion(currentUserId),
+              }, () => {
+                setUserBookedRide(null);
+              });
+              Alert.alert(
+                'ShareAuto cancellation submitted',
+                `You will be charged ₹${rebalance.chargedFare} based on distance traveled. Remaining passengers must approve the new fares to continue.`
+              );
+              setUserBookedRide(null);
+              setDestCoords(null);
+              setShowDetails(false);
+              setShowTipModal(false);
+              return;
+            }
             if (rideData.comboMode === 'PARCEL_PLUS_BIKE' && rideData.comboParcelSenderId === currentUserId) {
-              await updateDoc(rideRef, {
+              await updateRideSafely(id, {
                 comboMode: deleteField(),
                 comboParcelSenderId: deleteField(),
                 comboParcelSenderName: deleteField(),
@@ -2574,6 +2809,8 @@ function RideAppScreen() {
                 comboTotalFare: deleteField(),
                 comboTotalDistance: deleteField(),
                 comboStage: deleteField(),
+              }, () => {
+                setUserBookedRide(null);
               });
               setUserBookedRide(null);
               setDestCoords(null);
@@ -2709,6 +2946,90 @@ function RideAppScreen() {
     return decryptOTP(ride.encryptedOTP);
   };
 
+  const getSharePassengerDistanceById = (ride: Ride, passengerId: string) => {
+    const ids = ride.shareAutoPassengerIds || [];
+    const distances = ride.shareAutoPassengerDistances || [];
+    const index = ids.findIndex((id) => id === passengerId);
+    if (index >= 0 && distances[index]) return distances[index];
+    const pickups = ride.shareAutoPassengerPickups || [];
+    const drops = ride.shareAutoPassengerDrops || [];
+    if (index >= 0 && pickups[index] && drops[index]) {
+      return calcDist(pickups[index], drops[index]);
+    }
+    return ride.distance || 0;
+  };
+
+  const getSharePassengerFareById = (ride: Ride, passengerId: string) => {
+    const ids = ride.shareAutoPassengerIds || [];
+    const faresList = ride.shareAutoPassengerFares || [];
+    const index = ids.findIndex((id) => id === passengerId);
+    if (index >= 0 && typeof faresList[index] === 'number') return faresList[index];
+    if (ride.shareAutoSeats) return Math.round(ride.fare / Math.max(1, ride.shareAutoSeats));
+    return ride.fare || 0;
+  };
+
+  const getSharePassengerTravelledDistance = (ride: Ride, passengerId: string) => {
+    if (!ride.driverLocation) return 0;
+    const ids = ride.shareAutoPassengerIds || [];
+    const pickups = ride.shareAutoPassengerPickups || [];
+    const pickupDone = ride.shareAutoPickupCompletedIds || [];
+    const index = ids.findIndex((id) => id === passengerId);
+    if (index < 0 || !pickups[index]) return 0;
+    if (!pickupDone.includes(passengerId)) return 0;
+    const travelled = calcDist(pickups[index], ride.driverLocation);
+    const total = getSharePassengerDistanceById(ride, passengerId);
+    return Math.min(travelled, total);
+  };
+
+  const buildShareAutoFareRebalance = (ride: Ride, cancelledPassengerId: string) => {
+    const ids = ride.shareAutoPassengerIds || [];
+    const names = ride.shareAutoPassengerNames || [];
+    const remainingPassengerIds = ids.filter((id) => id !== cancelledPassengerId);
+    const cancelledIndex = ids.findIndex((id) => id === cancelledPassengerId);
+    const cancelledName = cancelledIndex >= 0 ? names[cancelledIndex] : 'Passenger';
+    const cancelledFare = getSharePassengerFareById(ride, cancelledPassengerId);
+    const passengerDistance = getSharePassengerDistanceById(ride, cancelledPassengerId);
+    const travelledDistance = getSharePassengerTravelledDistance(ride, cancelledPassengerId);
+    const travelledRatio = passengerDistance > 0 ? Math.min(1, Math.max(0, travelledDistance / passengerDistance)) : 0;
+    const chargedFare = Math.round(cancelledFare * travelledRatio);
+    const remainingFare = Math.max(0, cancelledFare - chargedFare);
+
+    const remainingDistances = remainingPassengerIds.map((id) => getSharePassengerDistanceById(ride, id));
+    const totalRemainingDistance = remainingDistances.reduce((sum, d) => sum + d, 0) || 1;
+    const extraFares = remainingPassengerIds.map((id, idx) => {
+      const share = remainingFare * (remainingDistances[idx] / totalRemainingDistance);
+      return Math.round(share);
+    });
+
+    const extraDiff = remainingFare - extraFares.reduce((sum, x) => sum + x, 0);
+    if (extraFares.length > 0 && extraDiff !== 0) {
+      extraFares[extraFares.length - 1] += extraDiff;
+    }
+
+    const newFares = remainingPassengerIds.map((id, idx) => {
+      const baseFare = getSharePassengerFareById(ride, id);
+      return baseFare + extraFares[idx];
+    });
+
+    const totalNewFare = newFares.reduce((sum, x) => sum + x, 0);
+
+    return {
+      active: true,
+      cancelledPassengerId,
+      cancelledPassengerName: cancelledName,
+      chargedFare,
+      remainingFare,
+      remainingPassengerIds,
+      extraFares,
+      newFares,
+      totalNewFare,
+      requestedAtMs: Date.now(),
+      driverApproved: false,
+      passengerApprovedIds: [],
+      passengerDeclinedIds: [],
+    };
+  };
+
   const getCurrentUserRideOtp = (ride: Ride | null) => {
     if (!ride) return '';
     if (isComboParcelSender(ride)) return decryptOTP(ride.comboParcelEncryptedOTP || ride.encryptedOTP);
@@ -2742,7 +3063,9 @@ function RideAppScreen() {
     if (isFirstPickup && !currentRide.pickupReachMinutes) {
       updatePayload.pickupReachMinutes = getPickupReachMinutes(currentRide);
     }
-    await updateDoc(doc(db, 'rides', currentRide.id), updatePayload);
+    await updateRideSafely(currentRide.id, updatePayload, () => {
+      setCurrentRide(null);
+    });
     setOtpInput('');
     setSelectedSharePassengerId('');
   };
@@ -2783,7 +3106,9 @@ function RideAppScreen() {
       return;
     }
 
-    await updateDoc(doc(db, 'rides', currentRide.id), { shareAutoDropCompletedIds: completedDrops });
+    await updateRideSafely(currentRide.id, { shareAutoDropCompletedIds: completedDrops }, () => {
+      setCurrentRide(null);
+    });
     setSelectedSharePassengerId('');
   };
 
@@ -3266,7 +3591,9 @@ function RideAppScreen() {
                             <Pressable style={styles.primaryButton} onPress={async () => {
                               const expected = decryptOTP(currentRide.comboParcelEncryptedOTP || currentRide.encryptedOTP);
                               if (otpInput.trim() !== expected) return Alert.alert('Error', 'Invalid parcel OTP');
-                              await updateDoc(doc(db, 'rides', currentRide.id!), { comboStage: 'passenger_pickup' });
+                              await updateRideSafely(currentRide.id, { comboStage: 'passenger_pickup' }, () => {
+                                setCurrentRide(null);
+                              });
                               setOtpInput('');
                             }}>
                               <Text style={styles.buttonText}>Confirm Parcel Pickup</Text>
@@ -3282,10 +3609,12 @@ function RideAppScreen() {
                             <TextInput style={styles.input} placeholder="Enter Passenger OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
                             <Pressable style={styles.primaryButton} onPress={async () => {
                               if (decryptOTP(currentRide.encryptedOTP) !== otpInput.trim()) return Alert.alert('Error', 'Invalid passenger OTP');
-                              await updateDoc(doc(db, 'rides', currentRide.id!), {
+                              await updateRideSafely(currentRide.id, {
                                 comboStage: 'passenger_drop',
                                 status: 'started',
                                 ...(currentRide.pickupReachMinutes ? {} : { pickupReachMinutes: getPickupReachMinutes(currentRide) }),
+                              }, () => {
+                                setCurrentRide(null);
                               });
                               setOtpInput('');
                             }}>
@@ -3382,9 +3711,11 @@ function RideAppScreen() {
                         <TextInput style={styles.input} placeholder="Enter OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
                         <Pressable style={styles.primaryButton} onPress={async () => {
                              if(decryptOTP(currentRide.encryptedOTP) === otpInput) {
-                                await updateDoc(doc(db, 'rides', currentRide.id!), {
+                                await updateRideSafely(currentRide.id, {
                                   status: 'started',
                                   ...(currentRide.pickupReachMinutes ? {} : { pickupReachMinutes: getPickupReachMinutes(currentRide) }),
+                                }, () => {
+                                  setCurrentRide(null);
                                 });
                                 setOtpInput('');
                              } else Alert.alert("Error", "Invalid OTP");
@@ -3400,7 +3731,9 @@ function RideAppScreen() {
                           <>
                             <Pressable style={[styles.navButton, {backgroundColor: '#34C759'}]} onPress={() => openGoogleMaps(currentRide.drop.latitude, currentRide.drop.longitude, 'Passenger Drop')}><Text style={styles.navButtonText}>🏁 Go to Passenger Drop</Text></Pressable>
                             <Pressable style={styles.primaryButton} onPress={async () => {
-                              await updateDoc(doc(db, 'rides', currentRide.id!), { comboStage: 'parcel_drop' });
+                              await updateRideSafely(currentRide.id, { comboStage: 'parcel_drop' }, () => {
+                                setCurrentRide(null);
+                              });
                             }}><Text style={styles.buttonText}>Confirm Passenger Drop</Text></Pressable>
                           </>
                         ) : (
