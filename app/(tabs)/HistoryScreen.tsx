@@ -5,12 +5,7 @@ import { db } from '../../lib/firebase';
 
 type HistoryRouteParams = {
   userId: string;
-};
-
-type RideHistoryItem = {
-  pickupAddr: string;
-  dropAddr: string;
-  status: string;
+  role?: 'driver' | 'passenger';
 };
 
 type HistoryScreenProps = {
@@ -19,38 +14,68 @@ type HistoryScreenProps = {
   };
 };
 
+interface RideHistoryItem {
+  id?: string;
+  rideId: string;
+  rideType: string;
+  pickupAddr?: string;
+  dropAddr?: string;
+  fare: number;
+  status: 'completed' | 'cancelled';
+  cancelledBy?: 'DRIVER' | 'PASSENGER';
+  driverId?: string;
+  driverName?: string;
+  passengerId?: string;
+  passengerName?: string;
+  createdAt?: any;
+};
+
 export default function HistoryScreen({ route }: HistoryScreenProps) {
-  const { userId } = route.params;
+  const { userId, role = 'driver' } = route.params;
 
   const [rides, setRides] = useState<RideHistoryItem[]>([]);
 
   useEffect(() => {
+    const field = role === 'driver' ? 'driverId' : 'passengerId';
     const q = query(
-      collection(db, 'rides'),
-      where('driverId', '==', userId)
+      collection(db, 'rideHistory'),
+      where(field, '==', userId)
     );
 
-    const unsub = onSnapshot(q, snap => {
-      setRides(snap.docs.map(d => d.data() as RideHistoryItem));
+    return onSnapshot(q, snap => {
+      const history: RideHistoryItem[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as RideHistoryItem));
+      history.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      setRides(history);
     });
-
-    return unsub;
-  }, [userId]);
+  }, [userId, role]);
 
   return (
     <View style={{ flex: 1, padding: 10 }}>
       <FlatList
         data={rides}
-        keyExtractor={(_, i) => i.toString()}
+        keyExtractor={(item) => item.id || ''}
+        ListEmptyComponent={<Text style={{ textAlign: 'center', color: '#666', padding: 40 }}>No ride history yet</Text>}
         renderItem={({ item }) => (
           <View style={{
             backgroundColor: '#fff',
-            padding: 10,
-            marginBottom: 10,
-            borderRadius: 10
+            padding: 16,
+            marginBottom: 12,
+            borderRadius: 16,
+            borderLeftWidth: 4,
+            borderLeftColor: item.status === 'completed' ? '#34C759' : '#FF3B30'
           }}>
-            <Text>{item.pickupAddr} → {item.dropAddr}</Text>
-            <Text>Status: {item.status}</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 16 }}>{item.pickupAddr || 'Pickup'} → {item.dropAddr || 'Drop'}</Text>
+              <Text style={{ color: item.status === 'completed' ? '#34C759' : '#FF3B30', fontWeight: 'bold' }}>
+                {item.status.toUpperCase()}
+              </Text>
+            </View>
+            <Text style={{ color: '#666', marginBottom: 4 }}>₹{item.fare} • {item.rideType}</Text>
+            {item.cancelledBy && (
+              <Text style={{ color: '#FF6B35', fontSize: 12 }}>Cancelled by {item.cancelledBy}</Text>
+            )}
+            {item.driverName && <Text style={{ color: '#666', fontSize: 12 }}>Driver: {item.driverName}</Text>}
+            {item.passengerName && <Text style={{ color: '#666', fontSize: 12 }}>Passenger: {item.passengerName}</Text>}
           </View>
         )}
       />

@@ -336,6 +336,7 @@ function RideAppScreen() {
   const [profileName, setProfileName] = useState('');
   const [profilePhone, setProfilePhone] = useState('');
   const [profileEarnWallet, setProfileEarnWallet] = useState(0);
+  const [farePenalty, setFarePenalty] = useState(0);
   const [driverPhotoUrl, setDriverPhotoUrl] = useState('');
   const [driverPhotoUri, setDriverPhotoUri] = useState('');
 
@@ -419,6 +420,14 @@ function RideAppScreen() {
   const [showShareAutoGame, setShowShareAutoGame] = useState(false);
   const [shareAutoGamePausedByRide, setShareAutoGamePausedByRide] = useState(false);
   const [gameMode, setGameMode] = useState<'bird' | 'zombie'>('bird');
+  const [showLogoutMenu, setShowLogoutMenu] = useState(false);
+  // Close logout menu when clicking outside
+  useEffect(() => {
+    if (showLogoutMenu) {
+      const timer = setTimeout(() => setShowLogoutMenu(false), 3000); // Auto close after 3 seconds
+      return () => clearTimeout(timer);
+    }
+  }, [showLogoutMenu]);
   const [gameTimeLeft, setGameTimeLeft] = useState(45);
   const [birdHits, setBirdHits] = useState(0);
   const [zombieHits, setZombieHits] = useState(0);
@@ -426,6 +435,28 @@ function RideAppScreen() {
   const [birdTarget, setBirdTarget] = useState({ x: 48, y: 48 });
   const [zombieTarget, setZombieTarget] = useState({ x: 30, y: 40 });
   const [selectedSharePassengerId, setSelectedSharePassengerId] = useState('');
+
+  // NEW PASSENGER STATES
+  const [passengerHistory, setPassengerHistory] = useState<RideHistory[]>([]);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showPassengerHistoryModal, setShowPassengerHistoryModal] = useState(false);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+  const journeyQuotes = [
+    'Share the ride, share the joy! 🌟',
+    'Together we go farther, cheaper! 👥',
+    'Smart rides for smart travelers 🚀',
+    'ShareIt: Making every trip awesome!',
+    'Ride together, save together! 💰',
+    'Hyderabad\'s smartest auto share 🛺',
+    'Group rides = Happy wallets! 😊'
+  ];
+  const passengerNotifications = useMemo(() => [
+    { id: '1', title: 'Ride update', message: 'Your driver is on the way and will reach shortly.' },
+    { id: '2', title: 'Cancellation policy', message: 'A ₹1 fare adjustment may apply after passenger cancellations.' },
+    { id: '3', title: 'Journey tip', message: 'Enjoy your trip with Share-It quotes while the ride is on.' },
+  ], []);
+  const [currentQuoteIndex, setCurrentQuoteIndex] = useState(0);
+  const journeyAnim = useRef(new Animated.Value(0)).current;
 
   const currentUserId = auth.currentUser?.uid || '';
   const activeRide = mode === 'USER' ? userBookedRide : currentRide;
@@ -637,6 +668,7 @@ function RideAppScreen() {
 
   const isValidMobile = (val: string) => /^[6-9]\d{9}$/.test(val);
   const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  const isValidVehiclePlate = (val: string) => /^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$/.test(val.toUpperCase());
 
   const getPrimaryAreaName = (address: string | undefined, fallback: string) => {
     if (!address?.trim()) return fallback;
@@ -1581,6 +1613,9 @@ function RideAppScreen() {
           }
         }
 
+        const savedFarePenalty = await AsyncStorage.getItem('fare_penalty');
+        if (mounted && savedFarePenalty) setFarePenalty(parseInt(savedFarePenalty) || 0);
+
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
           const applyResolvedLocation = (pos: Coord) => {
@@ -1773,6 +1808,31 @@ function RideAppScreen() {
   }, [mode, userBookedRide?.status, userBookedRide?.type, arrivalAutoPulse]);
 
   useEffect(() => {
+    if (mode !== 'USER' || userBookedRide?.status !== 'started') {
+      journeyAnim.stopAnimation();
+      journeyAnim.setValue(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setCurrentQuoteIndex((prev) => (prev + 1) % journeyQuotes.length);
+    }, 4500);
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(journeyAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        Animated.timing(journeyAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      clearInterval(interval);
+      journeyAnim.setValue(0);
+    };
+  }, [mode, userBookedRide?.status, journeyAnim, journeyQuotes.length]);
+
+  useEffect(() => {
     if (mode !== 'DRIVER' || !currentRide || currentRide.type !== 'ShareAuto' || currentRide.status !== 'accepted') return;
 
     const passengerCount = currentRide.shareAutoPassengerIds?.length || 0;
@@ -1816,6 +1876,22 @@ function RideAppScreen() {
       setDriverHistory([]);
       setDriverPayableToApp(0);
       setDriverAvgPickupMinutes(0);
+    });
+    return unsub;
+  }, [mode, currentUserId]);
+
+  useEffect(() => {
+    if (mode !== 'USER' || !currentUserId) {
+      setPassengerHistory([]);
+      return;
+    }
+    const q = query(collection(db, 'rideHistory'), where('passengerId', '==', currentUserId));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
+      list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      setPassengerHistory(list);
+    }, () => {
+      setPassengerHistory([]);
     });
     return unsub;
   }, [mode, currentUserId]);
@@ -2159,14 +2235,14 @@ function RideAppScreen() {
     if (pickupCoords && destCoords) {
         const dist = calcDist(pickupCoords, destCoords);
         setFares({
-          Bike: getDynamicBikeFare(dist),
-          Auto: getDynamicAutoFare(dist),
-          Cab: getDynamicCabFare(dist),
-          ShareAuto: getShareAutoFare(dist, 3),
-          Parcel: getDynamicParcelFare(dist),
+          Bike: getDynamicBikeFare(dist) + farePenalty,
+          Auto: getDynamicAutoFare(dist) + farePenalty,
+          Cab: getDynamicCabFare(dist) + farePenalty,
+          ShareAuto: getShareAutoFare(dist, 3) + farePenalty,
+          Parcel: getDynamicParcelFare(dist) + farePenalty,
         });
     }
-  }, [destCoords, pickupCoords, rides]);
+  }, [destCoords, pickupCoords, rides, farePenalty]);
 
   function calcDist(a: Coord, b: Coord) {
     const R = 6371;
@@ -2829,6 +2905,11 @@ function RideAppScreen() {
           setDestCoords(null);
           setShowDetails(false);
           setShowTipModal(false);
+          
+          // Increase fare penalty for passenger cancellation
+          const newPenalty = farePenalty + 1;
+          setFarePenalty(newPenalty);
+          await AsyncStorage.setItem('fare_penalty', newPenalty.toString());
         } catch {
           Alert.alert('Cancel failed', 'Could not cancel this ride. Please try again.');
         }
@@ -3184,20 +3265,27 @@ function RideAppScreen() {
               {destCoords && <Marker coordinate={destCoords} title="Drop" />}
             </MapView>
           ) : (
-            userBookedRide.status === 'accepted' ? (
-              <MapView
-                ref={mapRef}
-                style={styles.map}
-                initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : DEFAULT_MAP_REGION}
-              >
-                <Marker coordinate={getUserPerspectivePickup(userBookedRide) || userBookedRide.pickup} title="Pickup" pinColor="blue" />
-                <Marker coordinate={getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop} title="Drop" />
-                {userBookedRide.driverLocation && (
-                  <Marker coordinate={userBookedRide.driverLocation} title="Driver" description={userBookedRide.driverName || 'Driver'}>
-                    <Text style={{fontSize: 28}}>{icons[userBookedRide.type]}</Text>
-                  </Marker>
+            (userBookedRide.status === 'accepted' || userBookedRide.status === 'started') ? (
+              <View style={{ flex: 1, position: 'relative' }}>
+                <MapView
+                  ref={mapRef}
+                  style={styles.map}
+                  initialRegion={location ? { ...location, latitudeDelta: 0.05, longitudeDelta: 0.05 } : DEFAULT_MAP_REGION}
+                >
+                  <Marker coordinate={getUserPerspectivePickup(userBookedRide) || userBookedRide.pickup} title="Pickup" pinColor="blue" />
+                  <Marker coordinate={getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop} title="Drop" />
+                  {userBookedRide.driverLocation && (
+                    <Marker coordinate={userBookedRide.driverLocation} title="Driver" description={userBookedRide.driverName || 'Driver'}>
+                      <Text style={{ fontSize: 28 }}>{icons[userBookedRide.type]}</Text>
+                    </Marker>
+                  )}
+                </MapView>
+                {userBookedRide.status === 'started' && (
+                  <Animated.View style={[styles.journeyQuoteCard, { opacity: journeyAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) }]}>
+                    <Text style={styles.journeyQuoteText}>{journeyQuotes[currentQuoteIndex]}</Text>
+                  </Animated.View>
                 )}
-              </MapView>
+              </View>
             ) : (
               <View style={styles.loyaltyBackground}>
                   <Animated.Text style={[styles.loyaltyIcon, { transform: [{ scale: searchAnim }] }]}>🔍</Animated.Text>
@@ -3354,7 +3442,50 @@ function RideAppScreen() {
         <Pressable style={styles.badge} onPress={() => setMode(mode === 'USER' ? 'DRIVER' : 'USER')}>
           <Text style={{fontWeight:'700'}}>{mode === 'USER' ? '👤 Passenger' : `🚗 Pro Driver`}</Text>
         </Pressable>
-        {!userBookedRide && <Pressable style={styles.logout} onPress={() => signOut(auth)}><Text style={{color:'white'}}>X</Text></Pressable>}
+        <View style={{position: 'relative'}}>
+          <Pressable style={styles.logout} onPress={() => setShowLogoutMenu(!showLogoutMenu)}>
+            <Text style={{color:'white', fontSize: 18}}>⋯</Text>
+          </Pressable>
+          {showLogoutMenu && (
+            <View style={styles.logoutMenu}>
+              {mode === 'USER' && (
+                <>
+                  <Pressable style={styles.logoutMenuItem} onPress={() => {
+                    setShowLogoutMenu(false);
+                    setShowProfileModal(true);
+                  }}>
+                    <Text style={styles.menuItemText}>Profile</Text>
+                  </Pressable>
+                  <Pressable style={styles.logoutMenuItem} onPress={() => {
+                    setShowLogoutMenu(false);
+                    setShowPassengerHistoryModal(true);
+                  }}>
+                    <Text style={styles.menuItemText}>Ride history</Text>
+                  </Pressable>
+                  <Pressable style={styles.logoutMenuItem} onPress={() => {
+                    setShowLogoutMenu(false);
+                    setShowNotificationsModal(true);
+                  }}>
+                    <Text style={styles.menuItemText}>Notifications</Text>
+                  </Pressable>
+                </>
+              )}
+              <Pressable style={styles.logoutMenuItem} onPress={() => {
+                setShowLogoutMenu(false);
+                Alert.alert(
+                  'Logout',
+                  `Are you sure you want to logout as ${mode === 'USER' ? 'Passenger' : 'Driver'}?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Logout', style: 'destructive', onPress: () => signOut(auth) }
+                  ]
+                );
+              }}>
+                <Text style={styles.logoutMenuText}>Logout as {mode === 'USER' ? 'Passenger' : 'Driver'}</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
       </View>
 
       {/* FIXED BOTTOM ACTION CARD - Replaced <div> with <View>  */}
@@ -3531,7 +3662,8 @@ function RideAppScreen() {
                       keyboardType="phone-pad"
                       maxLength={10}
                     />
-                    <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={setVehiclePlate} />
+                    <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={(v) => setVehiclePlate(v.toUpperCase())} autoCapitalize="characters" />
+                    <Text style={{fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10}}>Example: MH12AB1234</Text>
                     
                     <View style={{marginVertical: 12, alignItems: 'center'}}>
                       <Text style={{fontSize: 12, color: '#666', marginBottom: 8}}>Driver Photo (Optional)</Text>
@@ -3558,6 +3690,10 @@ function RideAppScreen() {
                         }
                         if (!isValidMobile(driverPhone)) {
                           Alert.alert('Invalid mobile', 'Enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9.');
+                          return;
+                        }
+                        if (!isValidVehiclePlate(vehiclePlate)) {
+                          Alert.alert('Invalid vehicle plate', 'Enter a valid Indian vehicle number plate (e.g., MH12AB1234).');
                           return;
                         }
                         setIsIdentitySet(true);
@@ -3922,6 +4058,74 @@ function RideAppScreen() {
 
                 <Pressable onPress={() => setShowDetails(false)} style={{marginTop: 15, alignSelf:'center'}}><Text style={{color: '#007AFF', fontWeight:'bold'}}>CLOSE</Text></Pressable>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PASSENGER PROFILE MODAL */}
+      <Modal visible={showProfileModal} transparent animationType="slide" onRequestClose={() => setShowProfileModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.detailsModal}>
+            <Text style={styles.modalTitle}>Profile</Text>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Name</Text>
+              <Text style={styles.valText}>{profileName || 'N/A'}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Phone</Text>
+              <Text style={styles.valText}>{profilePhone || 'N/A'}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Earn Wallet</Text>
+              <Text style={styles.valText}>₹{profileEarnWallet}</Text>
+            </View>
+            <Pressable onPress={() => setShowProfileModal(false)} style={{marginTop: 20, alignSelf:'center'}}>
+              <Text style={{color: '#007AFF', fontWeight:'bold'}}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PASSENGER RIDE HISTORY MODAL */}
+      <Modal visible={showPassengerHistoryModal} transparent animationType="slide" onRequestClose={() => setShowPassengerHistoryModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.detailsModal}>
+            <Text style={styles.modalTitle}>Ride History</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {passengerHistory.length === 0 ? (
+                <Text style={styles.emptyText}>No rides completed or cancelled yet.</Text>
+              ) : passengerHistory.map((entry) => (
+                <View key={entry.id} style={styles.historyCard}>
+                  <Text style={styles.historyRoute}>{entry.pickupAddr || 'Unknown'} ➔ {entry.dropAddr || 'Unknown'}</Text>
+                  <Text style={styles.historyMeta}>{entry.status === 'completed' ? 'Completed' : 'Cancelled'} • ₹{entry.fare}</Text>
+                  {!!entry.driverName && <Text style={styles.historyMeta}>Driver: {entry.driverName}</Text>}
+                  <Text style={styles.historyMeta}>{entry.createdAt?.toDate ? entry.createdAt.toDate().toLocaleString() : ''}</Text>
+                </View>
+              ))}
+            </ScrollView>
+            <Pressable onPress={() => setShowPassengerHistoryModal(false)} style={{marginTop: 10, alignSelf:'center'}}>
+              <Text style={{color: '#007AFF', fontWeight:'bold'}}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PASSENGER NOTIFICATIONS MODAL */}
+      <Modal visible={showNotificationsModal} transparent animationType="slide" onRequestClose={() => setShowNotificationsModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.detailsModal}>
+            <Text style={styles.modalTitle}>Notifications</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {passengerNotifications.map((note) => (
+                <View key={note.id} style={styles.notificationCard}>
+                  <Text style={styles.historyRoute}>{note.title}</Text>
+                  <Text style={styles.historyMeta}>{note.message}</Text>
+                </View>
+              ))}
+            </ScrollView>
+            <Pressable onPress={() => setShowNotificationsModal(false)} style={{marginTop: 10, alignSelf:'center'}}>
+              <Text style={{color: '#007AFF', fontWeight:'bold'}}>Close</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -4435,6 +4639,12 @@ const styles = StyleSheet.create({
   contactTitle: { fontWeight: '800', marginBottom: 4, color: '#1B5E20' },
   contactText: { color: '#1F2937' },
   sharePassengerRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+  logoutMenu: { position: 'absolute', top: 45, right: 0, backgroundColor: 'white', borderRadius: 8, elevation: 10, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, minWidth: 150 },
+  logoutMenuItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#E5E5EA' },
+  logoutMenuText: { fontSize: 14, fontWeight: '600', color: '#FF3B30' },
+  menuItemText: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  journeyQuoteCard: { position: 'absolute', left: 16, right: 16, bottom: 24, backgroundColor: 'rgba(255,255,255,0.96)', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  journeyQuoteText: { fontSize: 16, fontWeight: '800', color: '#111827', textAlign: 'center' },
   sharePassengerMeta: { color: '#4B5563', fontSize: 12 },
   shareDriverFlowCard: { backgroundColor: '#FFF6CC', borderColor: '#E8C549', borderWidth: 1, borderRadius: 14, padding: 10, marginBottom: 10, width: '100%' },
   shareDriverFlowTitle: { color: '#6B4E00', fontWeight: '900', fontSize: 15, marginBottom: 2 },
