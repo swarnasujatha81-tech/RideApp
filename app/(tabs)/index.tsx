@@ -24,7 +24,7 @@ import {
   Dimensions,
   FlatList,
   Image,
-  Linking, Modal, Platform, Pressable, ScrollView,
+  Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
   StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
@@ -53,6 +53,7 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 const storage = getStorage(app);
+const SCREEN_HEIGHT = Dimensions.get('window').height;
 const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
 const EARN_REWARD_AMOUNT = 5;
 
@@ -441,6 +442,18 @@ function RideAppScreen() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showPassengerHistoryModal, setShowPassengerHistoryModal] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+  const [homeLocation, setHomeLocation] = useState<Coord | null>(null);
+  const [homeLocationLabel, setHomeLocationLabel] = useState('');
+  const [showHomeLocationMapModal, setShowHomeLocationMapModal] = useState(false);
+  const [showGoHomeVehicleModal, setShowGoHomeVehicleModal] = useState(false);
+  const [pendingHomeLocation, setPendingHomeLocation] = useState<Coord | null>(null);
+  const [isPassengerCardExpanded, setIsPassengerCardExpanded] = useState(false);
+  const [passengerCardCollapsedHeight, setPassengerCardCollapsedHeight] = useState(320);
+  const passengerCardTranslateY = useRef(new Animated.Value(0)).current;
+  const passengerCardDragStartRef = useRef(0);
+  const passengerCardPullUpMax = Math.max(0, SCREEN_HEIGHT - passengerCardCollapsedHeight + 52);
+  const [profileNameEdit, setProfileNameEdit] = useState('');
+  const [isSavingProfileName, setIsSavingProfileName] = useState(false);
   const journeyQuotes = [
     'Share the ride, share the joy! 🌟',
     'Together we go farther, cheaper! 👥',
@@ -452,11 +465,22 @@ function RideAppScreen() {
   ];
   const passengerNotifications = useMemo(() => [
     { id: '1', title: 'Ride update', message: 'Your driver is on the way and will reach shortly.' },
-    { id: '2', title: 'Cancellation policy', message: 'A ₹1 fare adjustment may apply after passenger cancellations.' },
-    { id: '3', title: 'Journey tip', message: 'Enjoy your trip with Share-It quotes while the ride is on.' },
+    { id: '2', title: 'Journey tip', message: 'Enjoy your trip with Share-It quotes while the ride is on.' },
   ], []);
+  const passengerHistoryLast28Days = useMemo(() => {
+    const cutoffMs = Date.now() - (28 * 24 * 60 * 60 * 1000);
+    return passengerHistory.filter((item) => (item.createdAt?.toMillis?.() || 0) >= cutoffMs);
+  }, [passengerHistory]);
+  const passengerFeatureItems = useMemo(() => ([
+    { icon: '💸', title: 'Smart Savings', text: 'Everyday rides with low, transparent pricing.' },
+    { icon: '🛺', title: 'ShareAuto Magic', text: 'Split the route, spend less, and ride together.' },
+    { icon: '🏠', title: 'Go Home in 2 Taps', text: 'Set home once, then book your ride instantly.' },
+    { icon: '❤️', title: 'Loved for Simplicity', text: 'Clean flow, fewer steps, and stress-free booking.' },
+  ]), []);
   const [currentQuoteIndex, setCurrentQuoteIndex] = useState(0);
   const journeyAnim = useRef(new Animated.Value(0)).current;
+  const passengerFeatureRevealAnim = useRef(new Animated.Value(0)).current;
+  const passengerFeaturePulseAnim = useRef(new Animated.Value(0)).current;
 
   const currentUserId = auth.currentUser?.uid || '';
   const activeRide = mode === 'USER' ? userBookedRide : currentRide;
@@ -480,6 +504,122 @@ function RideAppScreen() {
       throw error;
     }
   };
+
+  const animatePassengerCard = useCallback((expand: boolean) => {
+    setIsPassengerCardExpanded(expand);
+    Animated.spring(passengerCardTranslateY, {
+      toValue: expand ? -passengerCardPullUpMax : 0,
+      useNativeDriver: true,
+      bounciness: 2,
+      speed: 16,
+    }).start();
+  }, [passengerCardPullUpMax, passengerCardTranslateY]);
+
+  const passengerCardPanResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 6,
+    onPanResponderGrant: () => {
+      passengerCardTranslateY.stopAnimation((val) => {
+        passengerCardDragStartRef.current = val;
+      });
+    },
+    onPanResponderMove: (_, gestureState) => {
+      const nextVal = Math.max(-passengerCardPullUpMax, Math.min(0, passengerCardDragStartRef.current + gestureState.dy));
+      passengerCardTranslateY.setValue(nextVal);
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      const endVal = Math.max(-passengerCardPullUpMax, Math.min(0, passengerCardDragStartRef.current + gestureState.dy));
+      const shouldExpand = endVal < -(passengerCardPullUpMax * 0.42) || gestureState.vy < -0.45;
+      animatePassengerCard(shouldExpand);
+    },
+    onPanResponderTerminate: () => {
+      animatePassengerCard(isPassengerCardExpanded);
+    },
+  }), [animatePassengerCard, isPassengerCardExpanded, passengerCardPullUpMax, passengerCardTranslateY]);
+
+  const savePassengerHomeLocation = useCallback(async (coord: Coord) => {
+    const label = await getAreaLabelFromCoord(coord, 'Home');
+    setHomeLocation(coord);
+    setHomeLocationLabel(label);
+    if (currentUserId) {
+      await setDoc(doc(db, 'users', currentUserId), {
+        homeLocation: coord,
+        homeLocationLabel: label,
+        homeLocationUpdatedAt: Timestamp.now(),
+      }, { merge: true });
+    }
+    return label;
+  }, [currentUserId]);
+
+  const handleGoHomePress = useCallback(async () => {
+    if (!location) {
+      Alert.alert('Location needed', 'Please wait for your current location to load.');
+      return;
+    }
+
+    if (!homeLocation) {
+      setPendingHomeLocation(location);
+      setShowHomeLocationMapModal(true);
+      return;
+    }
+
+    setPickupCoords(location);
+    const pickupLabel = await getAreaLabelFromCoord(location, getNearestPopularArea(location));
+    setPickupInput(pickupLabel);
+    setDestCoords(homeLocation);
+    setDestination(homeLocationLabel || 'Home');
+    setShowGoHomeVehicleModal(true);
+    animatePassengerCard(true);
+  }, [animatePassengerCard, homeLocation, homeLocationLabel, location]);
+
+  const saveProfileName = useCallback(async () => {
+    const nextName = profileNameEdit.trim();
+    if (!nextName) {
+      Alert.alert('Required', 'Name cannot be empty.');
+      return;
+    }
+    if (nextName === profileName.trim()) {
+      Alert.alert('No changes', 'Your name is already up to date.');
+      return;
+    }
+
+    try {
+      setIsSavingProfileName(true);
+      if (currentUserId) {
+        await setDoc(doc(db, 'users', currentUserId), { name: nextName }, { merge: true });
+      }
+      setProfileName(nextName);
+      setProfileNameEdit(nextName);
+      Alert.alert('Saved', 'Your profile name was updated.');
+    } finally {
+      setIsSavingProfileName(false);
+    }
+  }, [currentUserId, profileName, profileNameEdit]);
+
+  useEffect(() => {
+    if (!(mode === 'USER' && isPassengerCardExpanded && !userBookedRide)) {
+      passengerFeatureRevealAnim.setValue(0);
+      passengerFeaturePulseAnim.setValue(0);
+      return;
+    }
+
+    Animated.timing(passengerFeatureRevealAnim, {
+      toValue: 1,
+      duration: 360,
+      useNativeDriver: true,
+    }).start();
+
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(passengerFeaturePulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+        Animated.timing(passengerFeaturePulseAnim, { toValue: 0, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    pulseLoop.start();
+    return () => {
+      pulseLoop.stop();
+      passengerFeaturePulseAnim.setValue(0);
+    };
+  }, [isPassengerCardExpanded, mode, passengerFeaturePulseAnim, passengerFeatureRevealAnim, userBookedRide]);
 
   useEffect(() => {
     if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto') return;
@@ -1573,8 +1713,11 @@ function RideAppScreen() {
       if (!user) {
         if (!mounted) return;
         setProfileName('');
+        setProfileNameEdit('');
         setProfilePhone('');
         setProfileEarnWallet(0);
+        setHomeLocation(null);
+        setHomeLocationLabel('');
         return;
       }
 
@@ -1582,23 +1725,32 @@ function RideAppScreen() {
         const userSnap = await getDoc(doc(db, 'users', user.uid));
         if (!mounted) return;
         if (userSnap.exists()) {
-          const userData = userSnap.data() as { name?: string; phone?: string; email?: string; earnWallet?: number };
+          const userData = userSnap.data() as { name?: string; phone?: string; email?: string; earnWallet?: number; homeLocation?: Coord; homeLocationLabel?: string };
           setProfileName(userData.name || '');
+          setProfileNameEdit(userData.name || '');
           setProfilePhone(userData.phone || '');
           setEmail(userData.email || user.email || '');
           setProfileEarnWallet(userData.earnWallet || 0);
+          setHomeLocation(userData.homeLocation || null);
+          setHomeLocationLabel(userData.homeLocationLabel || '');
         } else {
           setProfileName('');
+          setProfileNameEdit('');
           setProfilePhone('');
           setEmail(user.email || '');
           setProfileEarnWallet(0);
+          setHomeLocation(null);
+          setHomeLocationLabel('');
         }
       } catch {
         if (!mounted) return;
         setProfileName('');
+        setProfileNameEdit('');
         setProfilePhone('');
         setEmail(user.email || '');
         setProfileEarnWallet(0);
+        setHomeLocation(null);
+        setHomeLocationLabel('');
       }
     });
 
@@ -3431,13 +3583,14 @@ function RideAppScreen() {
           </View>
       )}
       
-      {mode === 'USER' && !!location && !userBookedRide && (
+      {mode === 'USER' && !!location && !userBookedRide && !isPassengerCardExpanded && (
         <Pressable style={styles.currentLocFab} onPress={focusOnCurrentLocation}>
           <Text style={styles.currentLocFabText}>⌖</Text>
         </Pressable>
       )}
 
       {/* HEADER */}
+      {!(mode === 'USER' && !userBookedRide && isPassengerCardExpanded) && (
       <View style={styles.header}>
         <Pressable style={styles.badge} onPress={() => setMode(mode === 'USER' ? 'DRIVER' : 'USER')}>
           <Text style={{fontWeight:'700'}}>{mode === 'USER' ? '👤 Passenger' : `🚗 Pro Driver`}</Text>
@@ -3487,61 +3640,236 @@ function RideAppScreen() {
           )}
         </View>
       </View>
+      )}
 
       {/* FIXED BOTTOM ACTION CARD - Replaced <div> with <View>  */}
-      <View style={styles.bottomCard}>
+      <Animated.View
+        {...(mode === 'USER' && !userBookedRide && !isPassengerCardExpanded ? passengerCardPanResponder.panHandlers : {})}
+        onLayout={(event) => {
+          if (mode === 'USER' && !userBookedRide && !isPassengerCardExpanded) {
+            setPassengerCardCollapsedHeight(event.nativeEvent.layout.height);
+          }
+        }}
+        style={[
+          styles.bottomCard,
+          mode === 'USER' && !userBookedRide && isPassengerCardExpanded ? styles.bottomCardOverlay : null,
+          mode === 'USER' && !userBookedRide
+            ? (!isPassengerCardExpanded ? { transform: [{ translateY: passengerCardTranslateY }] } : null)
+            : null,
+        ]}
+      >
         {mode === 'USER' ? (
           <>
             {!userBookedRide ? (
               <>
-                <TextInput style={styles.input} placeholder="Pickup Area" value={pickupInput} onChangeText={setPickupInput} onSubmitEditing={() => handleSearch('pickup')} />
-                <TextInput style={styles.input} placeholder="Drop Area" value={destination} onChangeText={setDestination} onSubmitEditing={() => handleSearch('drop')} />
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
-                  {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (
+                <View style={styles.passengerCardHandleWrap}>
+                  <View style={styles.passengerCardHandle} />
+                  <Text style={styles.passengerCardHandleHint}>{isPassengerCardExpanded ? 'Pull down to collapse' : 'Pull up to expand'}</Text>
+                </View>
+                {isPassengerCardExpanded ? (
+                  <ScrollView style={styles.passengerExpandedPage} showsVerticalScrollIndicator={false} contentContainerStyle={styles.passengerExpandedPageContent}>
+                    <View style={styles.passengerExpandedHeaderRow}>
+                      <Text style={styles.passengerExpandedTitle}>Quick Booking Page</Text>
+                    </View>
+                    <Text style={styles.passengerExpandedSubTitle}>Book instantly, use Go Home, and pull down anytime to pin markers on map.</Text>
+
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Pickup Area"
+                      value={pickupInput}
+                      onChangeText={(v) => {
+                        setPickupInput(v);
+                      }}
+                      onSubmitEditing={() => handleSearch('pickup')}
+                    />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Drop Area"
+                      value={destination}
+                      onChangeText={(v) => {
+                        setDestination(v);
+                      }}
+                      onSubmitEditing={() => handleSearch('drop')}
+                    />
+
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
+                      {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (
+                        <Pressable
+                          key={r}
+                          style={[
+                            styles.rideCard,
+                            r === 'ShareAuto' && styles.shareRideCard,
+                            r === 'Parcel' && styles.parcelRideCard,
+                            selectedRide === r && styles.selected,
+                          ]}
+                          onPress={async () => {
+                            playUiTapSound('vehicle');
+                            setSelectedRide(r);
+                          }}
+                        >
+                          {r === 'ShareAuto' && <Text style={styles.shareAttractLabel}>SAVE MONEY</Text>}
+                          {r === 'Parcel' && <Text style={styles.parcelAttractLabel}>DELIVERY</Text>}
+                          <Text style={{fontSize: 24}}>{icons[r]}</Text>
+                          <Text style={{fontWeight:'bold'}}>₹{fares[r]}</Text>
+                          <Text style={{fontSize: 10}}>{r === 'Parcel' ? 'Parcel' : r}</Text>
+                          {r === 'Parcel' && <Text style={styles.parcelCardHint}>Small parcels only</Text>}
+                        </Pressable>
+                      ))}
+                      <Pressable
+                        style={[styles.rideCard, styles.earnRideCard]}
+                        onPress={() => {
+                          playUiTapSound('vehicle');
+                          openEarnPage();
+                        }}
+                      >
+                        <Text style={styles.earnAttractLabel}>EARN</Text>
+                        <Text style={{fontSize: 24}}>💸</Text>
+                        <Text style={{fontWeight:'bold'}}>₹5</Text>
+                        <Text style={{fontSize: 10}}>Earn</Text>
+                        <Text style={styles.earnCardHint}>Book for others</Text>
+                      </Pressable>
+                    </ScrollView>
+
                     <Pressable
-                      key={r}
-                      style={[
-                        styles.rideCard,
-                        r === 'ShareAuto' && styles.shareRideCard,
-                        r === 'Parcel' && styles.parcelRideCard,
-                        selectedRide === r && styles.selected,
-                      ]}
+                      style={styles.primaryButton}
                       onPress={() => {
-                        playUiTapSound('vehicle');
-                        setSelectedRide(r);
+                        playUiTapSound('cta');
+                        requestRide();
                       }}
                     >
-                      {r === 'ShareAuto' && <Text style={styles.shareAttractLabel}>SAVE MONEY</Text>}
-                      {r === 'Parcel' && <Text style={styles.parcelAttractLabel}>DELIVERY</Text>}
-                      <Text style={{fontSize: 24}}>{icons[r]}</Text>
-                      <Text style={{fontWeight:'bold'}}>₹{fares[r]}</Text>
-                      <Text style={{fontSize: 10}}>{r === 'Parcel' ? 'Parcel' : r}</Text>
-                      {r === 'Parcel' && <Text style={styles.parcelCardHint}>Small parcels only</Text>}
+                      <Text style={styles.buttonText}>Lets Go</Text>
                     </Pressable>
-                  ))}
-                  <Pressable
-                    style={[styles.rideCard, styles.earnRideCard]}
-                    onPress={() => {
-                      playUiTapSound('vehicle');
-                      openEarnPage();
-                    }}
-                  >
-                    <Text style={styles.earnAttractLabel}>EARN</Text>
-                    <Text style={{fontSize: 24}}>💸</Text>
-                    <Text style={{fontWeight:'bold'}}>₹5</Text>
-                    <Text style={{fontSize: 10}}>Earn</Text>
-                    <Text style={styles.earnCardHint}>Book for others</Text>
-                  </Pressable>
-                </ScrollView>
-                <Pressable
-                  style={styles.primaryButton}
-                  onPress={() => {
-                    playUiTapSound('cta');
-                    requestRide();
-                  }}
-                >
-                  <Text style={styles.buttonText}>Lets Go</Text>
-                </Pressable>
+
+                    <View style={styles.goHomeWrap}>
+                      <Pressable style={styles.goHomeButton} onPress={handleGoHomePress}>
+                        <Text style={styles.goHomeButtonText}>Go Home</Text>
+                      </Pressable>
+                      <Text style={styles.goHomeHintText}>
+                        {homeLocation
+                          ? `Home: ${homeLocationLabel || `${homeLocation.latitude.toFixed(4)}, ${homeLocation.longitude.toFixed(4)}`}`
+                          : 'First time: tap Go Home and pin your home on map'}
+                      </Text>
+                    </View>
+
+                    <Animated.View
+                      style={[
+                        styles.passengerFeatureCard,
+                        {
+                          opacity: passengerFeatureRevealAnim,
+                          transform: [{
+                            translateY: passengerFeatureRevealAnim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] })
+                          }],
+                        },
+                      ]}
+                    >
+                      <Animated.Text
+                        style={[
+                          styles.passengerFeatureTitle,
+                          {
+                            transform: [{
+                              scale: passengerFeaturePulseAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] })
+                            }],
+                          },
+                        ]}
+                      >
+                        ✨ Why people love Share-It
+                      </Animated.Text>
+                      <View style={styles.passengerFeatureGrid}>
+                        {passengerFeatureItems.map((item, index) => (
+                          <Animated.View
+                            key={item.title}
+                            style={[
+                              styles.passengerFeatureTile,
+                              {
+                                opacity: passengerFeatureRevealAnim,
+                                transform: [{
+                                  translateY: passengerFeatureRevealAnim.interpolate({ inputRange: [0, 1], outputRange: [18 + (index * 3), 0] })
+                                }],
+                              },
+                            ]}
+                          >
+                            <Text style={styles.passengerFeatureTileIcon}>{item.icon}</Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.passengerFeatureTileTitle}>{item.title}</Text>
+                              <Text style={styles.passengerFeatureTileText}>{item.text}</Text>
+                            </View>
+                          </Animated.View>
+                        ))}
+                      </View>
+                    </Animated.View>
+
+                    <Pressable style={styles.passengerExpandedBottomBackBtn} onPress={() => animatePassengerCard(false)}>
+                      <Text style={styles.passengerExpandedBottomBackBtnText}>Back to Map</Text>
+                    </Pressable>
+                  </ScrollView>
+                ) : (
+                  <>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Pickup Area"
+                      value={pickupInput}
+                      onChangeText={(v) => {
+                        setPickupInput(v);
+                      }}
+                      onSubmitEditing={() => handleSearch('pickup')}
+                    />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Drop Area"
+                      value={destination}
+                      onChangeText={(v) => {
+                        setDestination(v);
+                      }}
+                      onSubmitEditing={() => handleSearch('drop')}
+                    />
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
+                      {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (
+                        <Pressable
+                          key={r}
+                          style={[
+                            styles.rideCard,
+                            r === 'ShareAuto' && styles.shareRideCard,
+                            r === 'Parcel' && styles.parcelRideCard,
+                            selectedRide === r && styles.selected,
+                          ]}
+                          onPress={() => {
+                            playUiTapSound('vehicle');
+                            setSelectedRide(r);
+                          }}
+                        >
+                          {r === 'ShareAuto' && <Text style={styles.shareAttractLabel}>SAVE MONEY</Text>}
+                          {r === 'Parcel' && <Text style={styles.parcelAttractLabel}>DELIVERY</Text>}
+                          <Text style={{fontSize: 24}}>{icons[r]}</Text>
+                          <Text style={{fontWeight:'bold'}}>₹{fares[r]}</Text>
+                          <Text style={{fontSize: 10}}>{r === 'Parcel' ? 'Parcel' : r}</Text>
+                          {r === 'Parcel' && <Text style={styles.parcelCardHint}>Small parcels only</Text>}
+                        </Pressable>
+                      ))}
+                      <Pressable
+                        style={[styles.rideCard, styles.earnRideCard]}
+                        onPress={() => {
+                          playUiTapSound('vehicle');
+                          openEarnPage();
+                        }}
+                      >
+                        <Text style={styles.earnAttractLabel}>EARN</Text>
+                        <Text style={{fontSize: 24}}>💸</Text>
+                        <Text style={{fontWeight:'bold'}}>₹5</Text>
+                        <Text style={{fontSize: 10}}>Earn</Text>
+                        <Text style={styles.earnCardHint}>Book for others</Text>
+                      </Pressable>
+                    </ScrollView>
+                    <Pressable
+                      style={styles.primaryButton}
+                      onPress={() => {
+                        playUiTapSound('cta');
+                        requestRide();
+                      }}
+                    >
+                      <Text style={styles.buttonText}>Lets Go</Text>
+                    </Pressable>
+                  </>
+                )}
                 {isFetchingCurrentLocation && (
                   <Text style={styles.currentLocationHintText}>Getting your current location shortly...</Text>
                 )}
@@ -3930,8 +4258,10 @@ function RideAppScreen() {
                       ? "❌ Access Restricted." 
                       : "Waiting for requests..."}
                   </Text>
-                ) : 
-                  visibleDriverRides.map((r: Ride) => (
+                ) : (
+                  <>
+                  <ScrollView style={styles.driverNotificationsScroll} showsVerticalScrollIndicator={false} nestedScrollEnabled>
+                    {visibleDriverRides.map((r: Ride) => (
                     <View key={r.id} style={styles.notificationCard}>
                       {(() => {
                         const pickupDistanceKm = location ? calcDist(location, r.pickup) : null;
@@ -3995,13 +4325,16 @@ function RideAppScreen() {
                         <Pressable style={styles.accButton} onPress={() => acceptRide(r)}><Text style={styles.accText}>ACCEPT</Text></Pressable>
                       </View>
                     </View>
-                  ))}
-                <TouchableOpacity onPress={() => { AsyncStorage.removeItem('driver_vehicle'); setDriverVehicle(null); setIsIdentitySet(false); }} style={{marginTop: 15}}><Text style={{color: '#8E8E93', textAlign:'center'}}>Change Vehicle</Text></TouchableOpacity>
+                    ))}
+                    </ScrollView>
+                  <TouchableOpacity onPress={() => { AsyncStorage.removeItem('driver_vehicle'); setDriverVehicle(null); setIsIdentitySet(false); }} style={{marginTop: 15}}><Text style={{color: '#8E8E93', textAlign:'center'}}>Change Vehicle</Text></TouchableOpacity>
+                  </>
+                )}
               </View>
             )}
           </ScrollView>
         )}
-      </View>
+      </Animated.View>
 
       {/* TRIP INFO MODAL */}
       <Modal visible={showDetails} transparent animationType="slide">
@@ -4062,27 +4395,76 @@ function RideAppScreen() {
         </View>
       </Modal>
 
-      {/* PASSENGER PROFILE MODAL */}
-      <Modal visible={showProfileModal} transparent animationType="slide" onRequestClose={() => setShowProfileModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.detailsModal}>
-            <Text style={styles.modalTitle}>Profile</Text>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Name</Text>
-              <Text style={styles.valText}>{profileName || 'N/A'}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Phone</Text>
-              <Text style={styles.valText}>{profilePhone || 'N/A'}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Earn Wallet</Text>
-              <Text style={styles.valText}>₹{profileEarnWallet}</Text>
-            </View>
-            <Pressable onPress={() => setShowProfileModal(false)} style={{marginTop: 20, alignSelf:'center'}}>
-              <Text style={{color: '#007AFF', fontWeight:'bold'}}>Close</Text>
+      {/* PASSENGER PROFILE SCREEN */}
+      <Modal visible={showProfileModal} animationType="slide" onRequestClose={() => setShowProfileModal(false)}>
+        <View style={styles.profileScreenWrap}>
+          <View style={styles.profileScreenHeader}>
+            <Text style={styles.profileScreenTitle}>Passenger Profile</Text>
+            <Pressable onPress={() => setShowProfileModal(false)}>
+              <Text style={styles.profileScreenClose}>Close</Text>
             </Pressable>
           </View>
+
+          <ScrollView contentContainerStyle={styles.profileScreenContent}>
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>My Details</Text>
+              <Text style={styles.profileLabel}>Name</Text>
+              <TextInput
+                style={styles.profileInput}
+                value={profileNameEdit}
+                onChangeText={setProfileNameEdit}
+                placeholder="Enter your name"
+              />
+              <Pressable style={[styles.primaryButton, isSavingProfileName && { opacity: 0.7 }]} disabled={isSavingProfileName} onPress={saveProfileName}>
+                <Text style={styles.buttonText}>{isSavingProfileName ? 'Saving...' : 'Save Name'}</Text>
+              </Pressable>
+
+              <Text style={[styles.profileLabel, { marginTop: 12 }]}>Phone Number</Text>
+              <Text style={styles.profileValue}>{profilePhone || 'N/A'}</Text>
+
+              <Text style={[styles.profileLabel, { marginTop: 12 }]}>Earn Wallet</Text>
+              <Text style={styles.profileWalletValue}>₹{profileEarnWallet}</Text>
+            </View>
+
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>Ride History (Last 28 Days)</Text>
+              <Text style={styles.profileHistoryMeta}>{passengerHistoryLast28Days.length} rides in the last 28 days</Text>
+              {passengerHistoryLast28Days.length === 0 ? (
+                <Text style={styles.profileValue}>No rides in this period.</Text>
+              ) : passengerHistoryLast28Days.slice(0, 8).map((entry) => (
+                <View key={entry.id} style={styles.profileHistoryRow}>
+                  <Text style={styles.profileHistoryRoute}>{entry.pickupAddr || 'Unknown'} ➔ {entry.dropAddr || 'Unknown'}</Text>
+                  <Text style={styles.profileHistoryStatus}>{entry.status === 'completed' ? 'Completed' : 'Cancelled'} • ₹{entry.fare}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>Notifications</Text>
+              <Text style={styles.profileValue}>{passengerNotifications.length} active notifications</Text>
+              <Pressable style={[styles.primaryButton, { marginTop: 12 }]} onPress={() => setShowNotificationsModal(true)}>
+                <Text style={styles.buttonText}>View Notifications</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>Home Location</Text>
+              <Text style={styles.profileValue}>
+                {homeLocation
+                  ? (homeLocationLabel || `${homeLocation.latitude.toFixed(5)}, ${homeLocation.longitude.toFixed(5)}`)
+                  : 'Not set yet'}
+              </Text>
+              <Pressable
+                style={[styles.primaryButton, { marginTop: 12 }]}
+                onPress={() => {
+                  setPendingHomeLocation(homeLocation || location || null);
+                  setShowHomeLocationMapModal(true);
+                }}
+              >
+                <Text style={styles.buttonText}>{homeLocation ? 'Edit Home Location' : 'Set Home Location'}</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
         </View>
       </Modal>
 
@@ -4126,6 +4508,121 @@ function RideAppScreen() {
             <Pressable onPress={() => setShowNotificationsModal(false)} style={{marginTop: 10, alignSelf:'center'}}>
               <Text style={{color: '#007AFF', fontWeight:'bold'}}>Close</Text>
             </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PASSENGER HOME LOCATION MAP */}
+      <Modal
+        visible={showHomeLocationMapModal}
+        animationType="slide"
+        onRequestClose={() => {
+          setShowHomeLocationMapModal(false);
+          setPendingHomeLocation(homeLocation);
+        }}
+      >
+        <View style={styles.driverMapModalWrap}>
+          <MapView
+            style={styles.driverMapModalMap}
+            initialRegion={
+              pendingHomeLocation
+                ? {
+                    ...pendingHomeLocation,
+                    latitudeDelta: 0.04,
+                    longitudeDelta: 0.04,
+                  }
+                : location
+                  ? { ...location, latitudeDelta: 0.05, longitudeDelta: 0.05 }
+                  : DEFAULT_MAP_REGION
+            }
+            onPress={(event) => {
+              const coord = event.nativeEvent.coordinate;
+              if (!isWithinHyderabadService(coord)) {
+                Alert.alert('Out of service area', `Please select a point within Hyderabad service area (${HYDERABAD_SERVICE_RADIUS_KM} km).`);
+                return;
+              }
+              setPendingHomeLocation(coord);
+            }}
+          >
+            {pendingHomeLocation && (
+              <Marker coordinate={pendingHomeLocation} title="Home" pinColor="#0F8A47" />
+            )}
+          </MapView>
+
+          <View style={styles.driverMapModalControls}>
+            <Text style={styles.driverMapModalTitle}>Pin your home location</Text>
+            <Text style={styles.driverMapModalHint}>Tap on map to place marker. You can edit this anytime from Profile.</Text>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.negButton, { marginRight: 8 }]}
+                onPress={() => {
+                  setShowHomeLocationMapModal(false);
+                  setPendingHomeLocation(homeLocation);
+                }}
+              >
+                <Text style={{ color: '#475569', fontWeight: '700' }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.accButton, !pendingHomeLocation && styles.disabledConfirmBtn]}
+                disabled={!pendingHomeLocation}
+                onPress={async () => {
+                  if (!pendingHomeLocation) return;
+                  const savedHomeLabel = await savePassengerHomeLocation(pendingHomeLocation);
+                  setShowHomeLocationMapModal(false);
+                  if (location) {
+                    setPickupCoords(location);
+                    const pickupLabel = await getAreaLabelFromCoord(location, getNearestPopularArea(location));
+                    setPickupInput(pickupLabel);
+                  }
+                  setDestCoords(pendingHomeLocation);
+                  setDestination(savedHomeLabel || 'Home');
+                  setShowGoHomeVehicleModal(true);
+                  animatePassengerCard(true);
+                }}
+              >
+                <Text style={styles.accText}>Save Home</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* GO HOME VEHICLE PAGE */}
+      <Modal
+        visible={showGoHomeVehicleModal}
+        animationType="slide"
+        onRequestClose={() => setShowGoHomeVehicleModal(false)}
+      >
+        <View style={styles.goHomeVehiclePageWrap}>
+          <View style={styles.goHomeVehicleHeader}>
+            <Text style={styles.goHomeVehicleTitle}>Go Home</Text>
+            <Pressable onPress={() => setShowGoHomeVehicleModal(false)}>
+              <Text style={styles.goHomeVehicleClose}>Close</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.goHomeVehicleBody}>
+            <Text style={styles.goHomeVehicleSub}>Select your transport mode</Text>
+            <Text style={styles.goHomeVehicleRoute}>{pickupInput || 'Current Location'} ➔ {destination || 'Home'}</Text>
+
+            <View style={styles.goHomeVehicleGrid}>
+              {(['Bike', 'Auto', 'Cab'] as const).map((type) => (
+                <Pressable
+                  key={type}
+                  style={styles.goHomeVehicleCard}
+                  onPress={async () => {
+                    setShowGoHomeVehicleModal(false);
+                    setSelectedRide(type);
+                    await bookRide(type);
+                    animatePassengerCard(false);
+                  }}
+                >
+                  <Text style={styles.goHomeVehicleIcon}>{icons[type]}</Text>
+                  <Text style={styles.goHomeVehicleName}>{type}</Text>
+                  <Text style={styles.goHomeVehicleFare}>₹{fares[type]}</Text>
+                </Pressable>
+              ))}
+            </View>
           </View>
         </View>
       </Modal>
@@ -4598,7 +5095,20 @@ const styles = StyleSheet.create({
   currentLocFabText: { fontSize: 12, color: '#FFFFFF', fontWeight: '900' },
   badge: { backgroundColor: 'white', padding: 12, borderRadius: 25, elevation: 5 },
   logout: { backgroundColor: '#FF3B30', width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  bottomCard: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: 'white', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20 },
+  bottomCard: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: 'white', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20, maxHeight: '100%' },
+  bottomCardOverlay: { top: 0, bottom: 0, left: 0, right: 0, width: '100%', borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 12, zIndex: 25, elevation: 30 },
+  passengerCardHandleWrap: { alignItems: 'center', marginBottom: 10, marginTop: -8 },
+  passengerCardHandle: { width: 54, height: 6, borderRadius: 4, backgroundColor: '#CBD5E1', marginBottom: 6 },
+  passengerCardHandleHint: { fontSize: 11, color: '#64748B', fontWeight: '600' },
+  passengerExpandedPage: { maxHeight: SCREEN_HEIGHT - 56 },
+  passengerExpandedPageContent: { paddingBottom: 24 },
+  passengerExpandedHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
+  passengerExpandedTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginBottom: 3 },
+  passengerExpandedSubTitle: { fontSize: 12, color: '#475569', marginBottom: 10, lineHeight: 18 },
+  passengerExpandedBackBtn: { backgroundColor: '#E0E7FF', borderWidth: 1, borderColor: '#A5B4FC', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  passengerExpandedBackBtnText: { color: '#3730A3', fontWeight: '800', fontSize: 12 },
+  passengerExpandedBottomBackBtn: { marginTop: 10, backgroundColor: '#111827', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  passengerExpandedBottomBackBtnText: { color: '#FFFFFF', fontWeight: '800' },
   input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
   primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
   currentLocationHintText: { marginTop: 6, fontSize: 11, color: '#6B7280', textAlign: 'center' },
@@ -4679,6 +5189,20 @@ const styles = StyleSheet.create({
   driverPromoPulse: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#007AFF', borderRadius: 18 },
   driverPromoTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
   driverPromoText: { fontSize: 13, color: '#475569', textAlign: 'center', lineHeight: 18 },
+  driverNotificationsScroll: { maxHeight: 330 },
+  goHomeWrap: { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 12, padding: 10, marginBottom: 10 },
+  goHomeButton: { backgroundColor: '#0F8A47', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  goHomeButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 15 },
+  goHomeHintText: { color: '#166534', marginTop: 8, fontWeight: '600' },
+  goHomeQuickHint: { marginTop: 6, color: '#166534', fontSize: 12, fontWeight: '700' },
+  passengerFeatureCard: { marginTop: 10, backgroundColor: '#EEF2FF', borderWidth: 1, borderColor: '#C7D2FE', borderRadius: 12, padding: 10 },
+  passengerFeatureTitle: { color: '#3730A3', fontWeight: '900', marginBottom: 6 },
+  passengerFeatureLine: { color: '#312E81', fontSize: 12, lineHeight: 18, marginBottom: 4 },
+  passengerFeatureGrid: { gap: 8 },
+  passengerFeatureTile: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFFFFF', borderRadius: 10, borderWidth: 1, borderColor: '#C7D2FE', padding: 8 },
+  passengerFeatureTileIcon: { fontSize: 18 },
+  passengerFeatureTileTitle: { color: '#312E81', fontWeight: '800', fontSize: 13 },
+  passengerFeatureTileText: { color: '#4338CA', fontSize: 11, marginTop: 1 },
   notificationCard: { backgroundColor: '#fff', borderRadius: 15, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#007AFF' },
   notifHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   accButton: { flex: 2, backgroundColor: '#34C759', padding: 12, borderRadius: 10, alignItems: 'center' },
@@ -4794,5 +5318,32 @@ const styles = StyleSheet.create({
   gameArena: { flex: 1, backgroundColor: '#d5c4ff', borderWidth: 1, borderColor: '#E8C549', borderRadius: 18, marginTop: 12, position: 'relative', overflow: 'hidden' },
   gameFloatingTarget: { position: 'absolute', transform: [{ translateX: -18 }, { translateY: -18 }], width: 52, height: 52, borderRadius: 26, backgroundColor: '#FFD84D', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#B88900' },
   gameZombieTarget: { backgroundColor: '#FFD6D6', borderColor: '#A43412' },
-  gameTargetText: { fontSize: 28 }
+  gameTargetText: { fontSize: 28 },
+  profileScreenWrap: { flex: 1, backgroundColor: '#0C4A6E' },
+  profileScreenHeader: { paddingTop: 54, paddingHorizontal: 18, paddingBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#0369A1' },
+  profileScreenTitle: { color: 'white', fontWeight: '900', fontSize: 20 },
+  profileScreenClose: { color: '#E0F2FE', fontWeight: '700' },
+  profileScreenContent: { padding: 14, paddingBottom: 120 },
+  profileCard: { backgroundColor: '#F0F9FF', borderRadius: 16, borderWidth: 1, borderColor: '#BAE6FD', padding: 14, marginBottom: 12 },
+  profileCardTitle: { color: '#0C4A6E', fontWeight: '900', marginBottom: 8, fontSize: 15 },
+  profileLabel: { color: '#0369A1', fontWeight: '700', marginBottom: 6 },
+  profileInput: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#7DD3FC', borderRadius: 10, padding: 11 },
+  profileValue: { color: '#0F172A', fontWeight: '600' },
+  profileWalletValue: { color: '#0E7490', fontSize: 24, fontWeight: '900' },
+  profileHistoryMeta: { color: '#0F766E', marginBottom: 8, fontWeight: '700' },
+  profileHistoryRow: { backgroundColor: '#ECFEFF', borderWidth: 1, borderColor: '#A5F3FC', borderRadius: 10, padding: 10, marginBottom: 8 },
+  profileHistoryRoute: { color: '#155E75', fontWeight: '700' },
+  profileHistoryStatus: { color: '#0F766E', marginTop: 2 },
+  goHomeVehiclePageWrap: { flex: 1, backgroundColor: '#F8FAFC' },
+  goHomeVehicleHeader: { paddingTop: 54, paddingHorizontal: 16, paddingBottom: 14, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  goHomeVehicleTitle: { fontSize: 22, fontWeight: '900', color: '#0F172A' },
+  goHomeVehicleClose: { color: '#334155', fontWeight: '700' },
+  goHomeVehicleBody: { padding: 16, flex: 1 },
+  goHomeVehicleSub: { color: '#475569', marginBottom: 4, fontWeight: '700' },
+  goHomeVehicleRoute: { color: '#0F172A', marginBottom: 14, fontWeight: '700' },
+  goHomeVehicleGrid: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 },
+  goHomeVehicleCard: { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  goHomeVehicleIcon: { fontSize: 30, marginBottom: 6 },
+  goHomeVehicleName: { color: '#1E293B', fontWeight: '800' },
+  goHomeVehicleFare: { color: '#0F766E', fontWeight: '800', marginTop: 2 }
 });
