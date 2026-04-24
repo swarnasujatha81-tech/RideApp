@@ -3509,6 +3509,18 @@ function RideAppScreen() {
                   <Pressable style={styles.historyBtn} onPress={() => setShowHistory(true)}>
                     <Text style={styles.historyBtnText}>View Ride History</Text>
                   </Pressable>
+                  {!!driverVehicle && (
+                    <Pressable
+                      style={styles.changeVehicleBtn}
+                      onPress={async () => {
+                        await AsyncStorage.removeItem('driver_vehicle');
+                        setDriverVehicle(null);
+                        setIsIdentitySet(false);
+                      }}
+                    >
+                      <Text style={styles.changeVehicleBtnText}>Change Vehicle</Text>
+                    </Pressable>
+                  )}
                </View>
 
                {(penalty === "SUSPENDED_2_DAYS" || penalty === "PERMANENT" || penalty.includes("SUSPENDED")) && (
@@ -5081,6 +5093,8 @@ const styles = StyleSheet.create({
   dashboard: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: 'white', padding: 20, borderRadius: 25, elevation: 4, width: '100%', justifyContent:'space-between' },
   historyBtn: { marginTop: 12, backgroundColor: '#0A8F48', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12 },
   historyBtnText: { color: 'white', fontWeight: '700' },
+  changeVehicleBtn: { marginTop: 10, backgroundColor: '#1D4ED8', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12 },
+  changeVehicleBtnText: { color: '#FFFFFF', fontWeight: '700' },
   dashItem: { width: '45%', alignItems: 'center', marginBottom: 15 },
   dashVal: { fontSize: 22, fontWeight: '900', color: '#1C1C1E' },
   dashLab: { fontSize: 12, color: '#8E8E93', fontWeight: 'bold' },
