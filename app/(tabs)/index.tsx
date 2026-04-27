@@ -58,7 +58,7 @@ const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
 const EARN_REWARD_AMOUNT = 5;
 
 type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
-type DriverVehicleType = 'Bike' | 'Auto' | 'Cab';
+type DriverVehicleType = 'Bike' | 'Cycle' | 'Auto' | 'Cab';
 type Coord = { latitude: number; longitude: number };
 
 interface Ride {
@@ -213,7 +213,7 @@ interface ShareAutoMatchResult {
   score: number;
 }
 
-const icons = { Bike: '🏍️', Auto: '🛺', Cab: '🚕', ShareAuto: '👥', Parcel: '📦' };
+const icons = { Bike: '🏍️', Cycle: '🚲', Auto: '🛺', Cab: '🚕', ShareAuto: '👥', Parcel: '📦' };
 const SECRET_KEY = process.env.EXPO_PUBLIC_OTP_SECRET_KEY || '';
 const FIVE_MIN_MS = 5 * 60 * 1000;
 const HYDERABAD_CENTER: Coord = { latitude: 17.385, longitude: 78.4867 };
@@ -1708,11 +1708,19 @@ function RideAppScreen() {
     return calcDist(ride.drop, driverDestinationMarker) <= DRIVER_DESTINATION_MARKER_RADIUS_KM;
   };
 
+  const isParcelWithinCycleRadius = (ride: Ride) => {
+    if (!location) return false;
+    return calcDist(location, ride.pickup) <= 4 && calcDist(location, ride.drop) <= 4;
+  };
+
   const isDriverEligibleForRide = useCallback((ride: Ride) => (
     ride.type === driverVehicle ||
     (driverVehicle === 'Auto' && ride.type === 'ShareAuto') ||
-    (ride.type === 'Parcel' && driverVehicle === 'Bike')
-  ), [driverVehicle]);
+    (ride.type === 'Parcel' && (
+      driverVehicle === 'Bike' ||
+      (driverVehicle === 'Cycle' && isParcelWithinCycleRadius(ride))
+    ))
+  ), [driverVehicle, location]);
 
   const visibleDriverRides = useMemo(() => {
     if (!driverOnline) return [];
@@ -2063,7 +2071,7 @@ function RideAppScreen() {
       try {
         const savedVehicle = await AsyncStorage.getItem('driver_vehicle');
         if (mounted && savedVehicle) {
-          if (savedVehicle === 'Bike' || savedVehicle === 'Auto' || savedVehicle === 'Cab') {
+          if (savedVehicle === 'Bike' || savedVehicle === 'Cycle' || savedVehicle === 'Auto' || savedVehicle === 'Cab') {
             setDriverVehicle(savedVehicle as DriverVehicleType);
           } else if (savedVehicle === 'ShareAuto') {
             setDriverVehicle('Auto');
@@ -4350,7 +4358,7 @@ function RideAppScreen() {
                 <View style={{padding: 10}}>
                     <Text style={styles.sectionTitle}>Pick your vehicle</Text>
                     <View style={styles.grid}>
-                        {(['Bike', 'Auto', 'Cab'] as DriverVehicleType[]).map(v => (
+                        {(['Bike', 'Cycle', 'Auto', 'Cab'] as DriverVehicleType[]).map(v => (
                             <Pressable
                               key={v}
                               style={styles.rideCard}
@@ -4683,8 +4691,8 @@ function RideAppScreen() {
                           {r.type === 'Parcel' && (
                             <View style={styles.parcelSingleNotifCard}>
                               <Text style={styles.parcelSingleNotifTitle}>Parcel delivery request</Text>
-                              <Text style={styles.parcelSingleNotifMeta}>Bike drivers only • not a ride</Text>
-                              <Text style={styles.parcelSingleNotifMeta}>Small hands-carry parcel delivery</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Bike or cycle drivers • not a ride</Text>
+                              <Text style={styles.parcelSingleNotifMeta}>Cycle parcels must stay within 4 km of your location</Text>
                             </View>
                           )}
                           {r.type === 'ShareAuto' && (
