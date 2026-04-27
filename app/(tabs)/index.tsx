@@ -176,6 +176,24 @@ interface ChatMessage {
   createdAt: number;
 }
 
+interface HelpAnswer {
+  text: string;
+  byName: string;
+  byPhone?: string;
+  byEmail?: string;
+  createdAtMs: number;
+}
+
+interface HelpQuestion {
+  id?: string;
+  question: string;
+  askedByName: string;
+  askedByPhone?: string;
+  askedByEmail?: string;
+  createdAtMs: number;
+  answers?: HelpAnswer[];
+}
+
 interface PoolPassenger {
   id: string;
   name: string;
@@ -347,9 +365,12 @@ function RideAppScreen() {
     earnings: 0, 
     cancelled: 0, 
     rating: 0,
+    totalRatings: 0,
     cancelHistory: [] as number[], 
     reportHistory: [] as number[], 
-    isPermanentlySuspended: false
+    isPermanentlySuspended: false,
+    dailyEarnings: {} as Record<string, number>,
+    badReportExplanation: ''
   });
 
   const [crewUnlockCode, setCrewUnlockCode] = useState('');
@@ -442,6 +463,10 @@ function RideAppScreen() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showPassengerHistoryModal, setShowPassengerHistoryModal] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+  const [showHelpModal, setShowHelpModal] = useState(false);
+  const [helpQuestionText, setHelpQuestionText] = useState('');
+  const [helpQuestions, setHelpQuestions] = useState<HelpQuestion[]>([]);
+  const [helpAnswerDrafts, setHelpAnswerDrafts] = useState<Record<string, string>>({});
   const [homeLocation, setHomeLocation] = useState<Coord | null>(null);
   const [homeLocationLabel, setHomeLocationLabel] = useState('');
   const [showHomeLocationMapModal, setShowHomeLocationMapModal] = useState(false);
@@ -454,6 +479,21 @@ function RideAppScreen() {
   const passengerCardPullUpMax = Math.max(0, SCREEN_HEIGHT - passengerCardCollapsedHeight + 52);
   const [profileNameEdit, setProfileNameEdit] = useState('');
   const [isSavingProfileName, setIsSavingProfileName] = useState(false);
+  const [showRideStartedGameModal, setShowRideStartedGameModal] = useState(false);
+  const [rideGameProgress, setRideGameProgress] = useState(0);
+  const [rideGameSpeed, setRideGameSpeed] = useState(0);
+  const [rideGameSteer, setRideGameSteer] = useState(0);
+  const [rideGameSparkle, setRideGameSparkle] = useState(0);
+  const startedRideShownRef = useRef('');
+  
+  // NEW STATES FOR RATINGS, EARNINGS & BEHAVIOR REPORTING
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [pendingRideForRating, setPendingRideForRating] = useState<Ride | null>(null);
+  const [selectedRating, setSelectedRating] = useState(0);
+  const [showEarningsPage, setShowEarningsPage] = useState(false);
+  const [driverEarningsLast28Days, setDriverEarningsLast28Days] = useState<Record<string, number>>({});
+  const rideNotificationDelayRef = useRef<Record<string, number>>({});
+  
   const journeyQuotes = [
     'Share the ride, share the joy! 🌟',
     'Together we go farther, cheaper! 👥',
@@ -595,6 +635,168 @@ function RideAppScreen() {
     }
   }, [currentUserId, profileName, profileNameEdit]);
 
+  const openComplaintEmail = useCallback(async () => {
+    const supportEmail = 's123shareit@gmail.com';
+    const userEmail = (auth.currentUser?.email || email || '').trim() || 'N/A';
+    const userPhone = profilePhone || 'N/A';
+    const subject = encodeURIComponent(`ShareIt Complaint - ${profileName || 'Passenger'}`);
+    const body = encodeURIComponent(
+      `Passenger Name: ${profileName || 'N/A'}\nPassenger Mobile: ${userPhone}\nPassenger Email: ${userEmail}\n\nComplaint details:\n`
+    );
+    const gmailUrl = `googlegmail://co?to=${encodeURIComponent(supportEmail)}&subject=${subject}&body=${body}`;
+    const mailToUrl = `mailto:${supportEmail}?subject=${subject}&body=${body}`;
+
+    try {
+      const canOpenGmail = await Linking.canOpenURL(gmailUrl);
+      if (canOpenGmail) {
+        await Linking.openURL(gmailUrl);
+        return;
+      }
+      await Linking.openURL(mailToUrl);
+    } catch {
+      Alert.alert('Unable to open email', 'Please send complaint manually to s123shareit@gmail.com');
+    }
+  }, [email, profileName, profilePhone]);
+
+  const logoutFromProfile = useCallback(() => {
+    Alert.alert(
+      'Logout',
+      'Are you sure you want to logout?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout',
+          style: 'destructive',
+          onPress: async () => {
+            setShowProfileModal(false);
+            await signOut(auth);
+          }
+        }
+      ]
+    );
+  }, []);
+
+  const deletePassengerHistoryEntry = useCallback(async (entryId: string) => {
+    try {
+      await deleteDoc(doc(db, 'rideHistory', entryId));
+    } catch {
+      Alert.alert('Delete failed', 'Could not delete this ride history entry.');
+    }
+  }, []);
+
+  const clearAllPassengerHistory = useCallback(async () => {
+    if (!currentUserId) return;
+    Alert.alert('Delete all history', 'This will permanently delete your ride history. Continue?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete All',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const historyQuery = query(collection(db, 'rideHistory'), where('passengerId', '==', currentUserId));
+            const snap = await getDocs(historyQuery);
+            await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, 'rideHistory', d.id))));
+          } catch {
+            Alert.alert('Delete failed', 'Could not clear ride history right now.');
+          }
+        }
+      }
+    ]);
+  }, [currentUserId]);
+
+  const postHelpQuestion = useCallback(async () => {
+    const question = helpQuestionText.trim();
+    if (!question) {
+      Alert.alert('Required', 'Type your question first.');
+      return;
+    }
+    try {
+      await addDoc(collection(db, 'helpForum'), {
+        question,
+        askedByName: profileName || 'Passenger',
+        askedByPhone: profilePhone || '',
+        askedByEmail: auth.currentUser?.email || email || '',
+        createdAtMs: Date.now(),
+        answers: [],
+      });
+      setHelpQuestionText('');
+    } catch {
+      Alert.alert('Send failed', 'Could not submit question. Please try again.');
+    }
+  }, [email, helpQuestionText, profileName, profilePhone]);
+
+  const postHelpAnswer = useCallback(async (questionId: string) => {
+    const answer = (helpAnswerDrafts[questionId] || '').trim();
+    if (!answer) return;
+
+    try {
+      await updateDoc(doc(db, 'helpForum', questionId), {
+        answers: arrayUnion({
+          text: answer,
+          byName: profileName || 'Passenger',
+          byPhone: profilePhone || '',
+          byEmail: auth.currentUser?.email || email || '',
+          createdAtMs: Date.now(),
+        }),
+      });
+      setHelpAnswerDrafts((prev) => ({ ...prev, [questionId]: '' }));
+    } catch {
+      Alert.alert('Answer failed', 'Could not post answer right now.');
+    }
+  }, [email, helpAnswerDrafts, profileName, profilePhone]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setHelpQuestions([]);
+      return;
+    }
+
+    const unsub = onSnapshot(collection(db, 'helpForum'), (snapshot) => {
+      const next = snapshot.docs
+        .map((d) => ({ id: d.id, ...d.data() } as HelpQuestion))
+        .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+      setHelpQuestions(next);
+    }, () => {
+      setHelpQuestions([]);
+    });
+
+    return unsub;
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (mode !== 'USER') return;
+    if (userBookedRide?.status === 'started' && userBookedRide.id && startedRideShownRef.current !== userBookedRide.id) {
+      startedRideShownRef.current = userBookedRide.id;
+      setRideGameProgress(0);
+      setRideGameSpeed(0);
+      setRideGameSteer(0);
+      setRideGameSparkle(0);
+      setShowRideStartedGameModal(true);
+      return;
+    }
+
+    if (!userBookedRide?.id) {
+      startedRideShownRef.current = '';
+      setShowRideStartedGameModal(false);
+      setRideGameProgress(0);
+      setRideGameSpeed(0);
+      setRideGameSteer(0);
+      setRideGameSparkle(0);
+    }
+  }, [mode, userBookedRide?.id, userBookedRide?.status]);
+
+  useEffect(() => {
+    if (!showRideStartedGameModal) return;
+
+    const tick = setInterval(() => {
+      setRideGameSpeed((prev) => Math.max(0, prev - 0.2));
+      setRideGameProgress((prev) => Math.min(100, prev + Math.max(0.1, rideGameSpeed * 0.18)));
+      setRideGameSparkle((prev) => (prev + 1) % 4);
+    }, 120);
+
+    return () => clearInterval(tick);
+  }, [showRideStartedGameModal, rideGameSpeed]);
+
   useEffect(() => {
     if (!(mode === 'USER' && isPassengerCardExpanded && !userBookedRide)) {
       passengerFeatureRevealAnim.setValue(0);
@@ -697,6 +899,26 @@ function RideAppScreen() {
       ]
     );
   }, [currentRide]);
+
+  useEffect(() => {
+    if (mode !== 'USER') return;
+
+    if (userBookedRide?.id) {
+      lastUserRideStateRef.current = { id: userBookedRide.id, status: userBookedRide.status };
+      return;
+    }
+
+    const last = lastUserRideStateRef.current;
+    if (!last?.id) return;
+
+    const lastRide = rides.find((r) => r.id === last.id);
+    if (lastRide?.driverId) {
+      setPendingRideForRating(lastRide);
+      setShowRatingModal(true);
+      setSelectedRating(0);
+    }
+    lastUserRideStateRef.current = null;
+  }, [mode, userBookedRide, rides]);
 
   useEffect(() => {
     if (!currentRide?.id || currentRide.type !== 'ShareAuto') return;
@@ -1494,11 +1716,24 @@ function RideAppScreen() {
 
   const visibleDriverRides = useMemo(() => {
     if (!driverOnline) return [];
+    const reductionPercentage = getNotificationReductionPercentage();
+    const ratingDelayMs = getRatingBasedDelay(driverStats.rating || 0);
 
     return rides
       .filter((ride) => isDriverEligibleForRide(ride) && !ignoredRides.includes(ride.id!) && isFreshWaitingRide(ride))
       .filter((ride) => isWithinDriverDestinationMarkerRadius(ride))
       .filter((ride) => ride.type !== 'ShareAuto' || !location || getDistanceFromDriver(ride) <= 3)
+      .filter((ride) => {
+        const createdAtMs = getRideCreatedAtMs(ride.createdAt);
+        if (!createdAtMs) return true;
+        return (Date.now() - createdAtMs) >= ratingDelayMs;
+      })
+      .filter((ride) => {
+        const maxFare = getMaxFareForBehaviorReport();
+        if (maxFare === 0) return true;
+        return ride.fare <= maxFare;
+      })
+      .filter((ride) => shouldSurfaceRideUnderReduction(ride.id || '', reductionPercentage))
       .reduce((list, ride) => {
         if (ride.type !== 'ShareAuto') {
           list.push(ride);
@@ -1531,7 +1766,7 @@ function RideAppScreen() {
         if (a.type === 'ShareAuto' && b.type === 'ShareAuto') return getDistanceFromDriver(a) - getDistanceFromDriver(b);
         return (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0);
       });
-  }, [driverOnline, rides, ignoredRides, location, isDriverEligibleForRide]);
+  }, [driverOnline, rides, ignoredRides, location, isDriverEligibleForRide, driverStats.rating, driverStats.completed, driverStats.reportHistory]);
 
   const playChatSound = async () => {
     try {
@@ -1648,14 +1883,19 @@ function RideAppScreen() {
   // PENALTY LOGIC APPLIED INDIVIDUALLY [cite: 173]
   const getPenaltyStatus = () => {
     const now = Date.now();
+    const oneHrAgo = now - (1 * 60 * 60 * 1000);
     const twoHrsAgo = now - (2 * 60 * 60 * 1000);
     const threeHrsAgo = now - (3 * 60 * 60 * 1000);
+    const fiveHrsAgo = now - (5 * 60 * 60 * 1000);
     const sixHrsAgo = now - (6 * 60 * 60 * 1000);
     const fifteenHrsAgo = now - (15 * 60 * 60 * 1000);
     const thirtyHrsAgo = now - (30 * 60 * 60 * 1000);
+    const twelveHrsAgo = now - (12 * 60 * 60 * 1000);
 
     const cancelsLast15 = driverStats.cancelHistory.filter(t => t > fifteenHrsAgo).length;
     const cancelsLast30 = driverStats.cancelHistory.filter(t => t > thirtyHrsAgo).length;
+    const reportsLast1Hr = driverStats.reportHistory.filter(t => t > oneHrAgo).length;
+    const reportsLast5Hrs = driverStats.reportHistory.filter(t => t > fiveHrsAgo).length;
     const reportsLast2 = driverStats.reportHistory.filter(t => t > twoHrsAgo).length;
     const reportsLast3 = driverStats.reportHistory.filter(t => t > threeHrsAgo).length;
     const reportsLast6 = driverStats.reportHistory.filter(t => t > sixHrsAgo).length;
@@ -1663,6 +1903,8 @@ function RideAppScreen() {
     if (driverStats.isPermanentlySuspended) return "PERMANENT";
     if (reportsLast6 >= 8) return "SUSPENDED_36_HOURS";
     if (reportsLast3 >= 7) return "SUSPENDED_2_HOURS";
+    // NEW: If 3 or more bad reports in 5 hours, suspend for 12 hours
+    if (reportsLast5Hrs >= 3) return "BEHAVIOR_SUSPENDED_12_HOURS";
     if (reportsLast2 >= 2) return "BEHAVIOR_WARNING";
     if (cancelsLast30 >= 20) return "SUSPENDED_2_DAYS";
     if (cancelsLast15 >= 13) return "BLOCKED_5_HOURS";
@@ -1671,7 +1913,28 @@ function RideAppScreen() {
     return "CLEAR";
   };
 
-  const penalty = getPenaltyStatus();
+  const penalty = getPenaltyStatus(); // Updated to ensure penalty is fetched correctly
+  const reportsLast5Hours = useMemo(() => {
+    const fiveHrsAgo = Date.now() - (5 * 60 * 60 * 1000);
+    return driverStats.reportHistory.filter((t) => t > fiveHrsAgo).length;
+  }, [driverStats.reportHistory]);
+  const reportsLast1Hour = useMemo(() => {
+    const oneHrAgo = Date.now() - (1 * 60 * 60 * 1000);
+    return driverStats.reportHistory.filter((t) => t > oneHrAgo).length;
+  }, [driverStats.reportHistory]);
+
+  const behaviorRestrictionMessage = useMemo(() => {
+    if (reportsLast5Hours >= 3) {
+      return '3+ reports in last 5 hours: ride notifications reduced by 75% and rides above ₹100 are blocked.';
+    }
+    if (reportsLast5Hours >= 2 && reportsLast1Hour >= 1) {
+      return '2 reports in last 5 hours: ride notifications reduced by 50% and rides above ₹250 are blocked for 1 hour.';
+    }
+    if (reportsLast5Hours >= 1) {
+      return 'Behaviour report found. Next reports can reduce your notifications and suspend your account.';
+    }
+    return '';
+  }, [reportsLast5Hours, reportsLast1Hour]);
 
   const handleCrewUnlock = () => {
     if (crewUnlockCode === "sorry123") {
@@ -1688,6 +1951,48 @@ function RideAppScreen() {
       Alert.alert("Error", "Invalid Crew Code");
     }
   };
+
+      // BEHAVIOR REPORT FILTERING: Reduce notifications based on report count
+      function getMaxFareForBehaviorReport() {
+        const now = Date.now();
+        const oneHrAgo = now - (1 * 60 * 60 * 1000);
+        const fiveHrsAgo = now - (5 * 60 * 60 * 1000);
+        const reportsLast1Hr = driverStats.reportHistory.filter((t) => t > oneHrAgo).length;
+        const reportsLast5Hrs = driverStats.reportHistory.filter(t => t > fiveHrsAgo).length;
+    
+        if (reportsLast5Hrs >= 3) return 100; // 75% reduction: only rides >100 rupees rejected
+        if (reportsLast5Hrs >= 2 && reportsLast1Hr >= 1) return 250; // 50% reduction for next hour
+        return 0; // No restrictions
+      }
+
+      function getNotificationReductionPercentage() {
+        const now = Date.now();
+        const oneHrAgo = now - (1 * 60 * 60 * 1000);
+        const fiveHrsAgo = now - (5 * 60 * 60 * 1000);
+        const reportsLast1Hr = driverStats.reportHistory.filter((t) => t > oneHrAgo).length;
+        const reportsLast5Hrs = driverStats.reportHistory.filter(t => t > fiveHrsAgo).length;
+    
+        if (reportsLast5Hrs >= 3) return 0.75; // 75% reduction
+        if (reportsLast5Hrs >= 2 && reportsLast1Hr >= 1) return 0.50; // 50% reduction for next hour
+        return 0;
+      }
+
+      function shouldSurfaceRideUnderReduction(rideId: string, reduction: number) {
+        if (!rideId || reduction <= 0) return true;
+        const hash = rideId.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+        return (hash % 100) >= Math.round(reduction * 100);
+      }
+
+      // RATING-BASED NOTIFICATION DELAY: Higher rated drivers get rides first
+      function getRatingBasedDelay(driverRating: number): number {
+        // Only apply rating-based delay if driver has completed more than 8 rides
+        if (driverStats.completed <= 8) return 0;
+    
+        if (driverRating > 4) return 0; // Immediate notification
+        if (driverRating >= 2 && driverRating <= 4) return 3000; // 3 seconds delay
+        if (driverRating < 2) return 5000; // 5 seconds delay
+        return 0;
+      }
 
   useEffect(() => {
     const cleanup = setInterval(async () => {
@@ -2886,6 +3191,54 @@ function RideAppScreen() {
     }
   };
 
+
+    const submitDriverRating = async (rideId: string, driverId: string, rating: number) => {
+      try {
+        if (!rating || rating < 1 || rating > 5) {
+          rating = 4.8;
+        }
+        const driverRef = doc(db, 'users', driverId);
+        await setDoc(driverRef, { ratings: arrayUnion(rating), lastRatedAt: Timestamp.now() }, { merge: true });
+        await addDoc(collection(db, 'rideRatings'), { rideId, driverId, passengerId: currentUserId, rating, createdAt: Timestamp.now() });
+        setShowRatingModal(false);
+        setPendingRideForRating(null);
+        setSelectedRating(0);
+      } catch (error) {
+        Alert.alert('Error', 'Failed to submit rating');
+      }
+    };
+  const reportDriverBehavior = async (rideId: string, driverId: string, reason: string) => {
+    try {
+      await addDoc(collection(db, 'driverReports'), { rideId, driverId, passengerId: currentUserId, reason, createdAt: Timestamp.now() });
+      await setDoc(doc(db, 'users', driverId), { reportHistory: arrayUnion(Date.now()) }, { merge: true });
+      Alert.alert('Report Submitted', 'Thank you for helping us maintain quality.');
+    } catch {
+      Alert.alert('Error', 'Failed to submit report');
+    }
+  };
+
+  const load28DayEarnings = async () => {
+    try {
+      if (!currentUserId) return;
+      const cutoffMs = Date.now() - (28 * 24 * 60 * 60 * 1000);
+      const q = query(collection(db, 'rideHistory'), where('driverId', '==', currentUserId), where('status', '==', 'completed'));
+      const snapshot = await getDocs(q);
+      const dailyEarnings: Record<string, number> = {};
+      snapshot.forEach((historyDoc) => {
+        const data = historyDoc.data();
+        const createdAtMs = data.createdAt?.toMillis?.() || 0;
+        if (createdAtMs < cutoffMs) return;
+        const date = new Date(createdAtMs);
+        const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+        const earning = data.driverPayout || data.fare || 0;
+        dailyEarnings[dateStr] = (dailyEarnings[dateStr] || 0) + earning;
+      });
+      setDriverEarningsLast28Days(dailyEarnings);
+    } catch {
+      // Ignore transient fetch errors.
+    }
+  };
+
   const acceptRide = async (ride: Ride) => {
     const pStatus = getPenaltyStatus();
     if (pStatus === "BLOCKED_5_HOURS" || pStatus === "SUSPENDED_2_DAYS" || pStatus === "PERMANENT" || pStatus === "SUSPENDED_2_HOURS" || pStatus === "SUSPENDED_36_HOURS") {
@@ -2989,13 +3342,17 @@ function RideAppScreen() {
         );
     } else {
         try {
-          if (reason === 'extra_money' || reason === 'bad_behavior') {
-              Alert.alert("Reported", "Driver behavior reported. We will take action.");
-          }
           const rideRef = doc(db, 'rides', id);
           const rideSnap = await getDoc(rideRef);
           if (rideSnap.exists()) {
             const rideData = { id: rideSnap.id, ...rideSnap.data() } as Ride;
+            if (rideData.driverId && (reason === 'extra_money' || reason === 'bad_behavior' || reason === 'cancel_after_otp')) {
+              await reportDriverBehavior(
+                rideData.id || id,
+                rideData.driverId,
+                reason === 'extra_money' ? 'EXTRA_MONEY' : reason === 'bad_behavior' ? 'BEHAVIOR' : 'CANCEL_AFTER_OTP'
+              );
+            }
             const isShareAutoCancelEligible =
               rideData.type === 'ShareAuto' &&
               rideData.status !== 'waiting' &&
@@ -3467,12 +3824,25 @@ function RideAppScreen() {
                           <Text style={styles.warningTitle}>⚠️ {penalty === "BEHAVIOR_WARNING" ? "BEHAVIOR WARNING" : "STRONG WARNING"}</Text>
                           <Text style={styles.warningDesc}>
                             {penalty === "BEHAVIOR_WARNING" 
-                                ? "Multiple passengers reported issues with your service. Further reports will lead to suspension."
+                              ? "Behaviour report found. Please avoid bad behaviour, extra fare requests, or cancelling after OTP. Repeated reports can suspend your account."
                                 : "You have cancelled many rides. If you reach 13, you will be blocked for 5 hours."}
                           </Text>
                       </View>
                   )}
 
+                  {!!behaviorRestrictionMessage && (
+                    <View style={[styles.warningBox, { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]}>
+                      <Text style={[styles.warningTitle, { color: '#B45309' }]}>Notification Restrictions</Text>
+                      <Text style={styles.warningDesc}>{behaviorRestrictionMessage}</Text>
+                    </View>
+                  )}
+
+          {penalty === "BEHAVIOR_SUSPENDED_12_HOURS" && (
+            <View style={[styles.warningBox, {borderColor: '#DC2626'}]}>
+              <Text style={[styles.warningTitle, {color: '#DC2626'}]}>🚨 ACCOUNT SUSPENDED - 12 HOURS</Text>
+              <Text style={styles.warningDesc}>Your account is suspended for 12 hours due to multiple behavior reports. You will not receive ride notifications. This is a final warning before account permanent suspension.</Text>
+            </View>
+          )}
                   {penalty === "BLOCKED_5_HOURS" && (
                       <View style={[styles.warningBox, {borderColor: '#FF3B30'}]}>
                           <Text style={[styles.warningTitle, {color: '#FF3B30'}]}>🚫 ACCESS BLOCKED</Text>
@@ -3508,6 +3878,9 @@ function RideAppScreen() {
                   </View>
                   <Pressable style={styles.historyBtn} onPress={() => setShowHistory(true)}>
                     <Text style={styles.historyBtnText}>View Ride History</Text>
+                                    <Pressable style={[styles.historyBtn, {backgroundColor: '#F59E0B'}]} onPress={() => { load28DayEarnings(); setShowEarningsPage(true); }}>
+                                      <Text style={styles.historyBtnText}>View 28-Day Earnings</Text>
+                                    </Pressable>
                   </Pressable>
                   {!!driverVehicle && (
                     <Pressable
@@ -3532,6 +3905,7 @@ function RideAppScreen() {
                             ? "Your account is permanently suspended. Visit office to pay ₹500 fine." 
                             : penalty === "SUSPENDED_36_HOURS" ? "Suspended for 36 hours due to serious passenger reports."
                             : penalty === "SUSPENDED_2_HOURS" ? "Suspended for 2 hours due to behavior reports."
+                           : penalty === "BEHAVIOR_SUSPENDED_12_HOURS" ? "Suspended for 12 hours due to repeated behavior/extra fare complaints in last 5 hours."
                             : "Account suspended for 2 days. Final warning before permanent suspension."}
                        </Text>
                        <View style={styles.crewBox}>
@@ -3942,10 +4316,11 @@ function RideAppScreen() {
                     </View>
                   </View>
                 ) : userBookedRide.status === 'started' ? (
-                  <View style={styles.driverArrivingCard}>
-                    <Text style={[styles.searchingText, {color: '#34C759'}]}>🚀 Trip Started!</Text>
-                    <Pressable style={styles.navButton} onPress={() => openGoogleMaps((getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop).latitude, (getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop).longitude, "Drop")}>
-                        <Text style={styles.navButtonText}>Navigate Route</Text>
+                  <View style={[styles.driverArrivingCard, { backgroundColor: '#ECFDF3', borderColor: '#7DD3A5', borderWidth: 1 }]}> 
+                    <Text style={[styles.searchingText, {color: '#15803D'}]}>🎉 Congratulations! Your ride has started.</Text>
+                    <Text style={{ color: '#166534', textAlign: 'center', marginTop: 4 }}>Open the creative ride screen and play until destination.</Text>
+                    <Pressable style={[styles.navButton, { marginTop: 10 }]} onPress={() => setShowRideStartedGameModal(true)}>
+                        <Text style={styles.navButtonText}>Open Ride Experience</Text>
                     </Pressable>
                   </View>
                 ) : (userBookedRide.type === 'ShareAuto' && (userBookedRide.shareAutoSeats || 0) >= 3) ? (
@@ -4390,6 +4765,7 @@ function RideAppScreen() {
                                 <Text style={[styles.cancelTitle, {marginTop: 10}]}>Driver Issues</Text>
                                 <TouchableOpacity style={styles.reasonBtn} onPress={() => cancelRide(userBookedRide.id!, false, 'extra_money')}><Text>Driver asking extra money</Text></TouchableOpacity>
                                 <TouchableOpacity style={styles.reasonBtn} onPress={() => cancelRide(userBookedRide.id!, false, 'bad_behavior')}><Text>Driver behavior not good</Text></TouchableOpacity>
+                                <TouchableOpacity style={styles.reasonBtn} onPress={() => cancelRide(userBookedRide.id!, false, 'cancel_after_otp')}><Text>Driver cancelled after OTP</Text></TouchableOpacity>
                             </>
                         )}
                     </View>
@@ -4449,6 +4825,14 @@ function RideAppScreen() {
                   <Text style={styles.profileHistoryStatus}>{entry.status === 'completed' ? 'Completed' : 'Cancelled'} • ₹{entry.fare}</Text>
                 </View>
               ))}
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={() => setShowPassengerHistoryModal(true)}>
+                  <Text style={styles.buttonText}>View All</Text>
+                </Pressable>
+                <Pressable style={[styles.primaryButton, { flex: 1, backgroundColor: '#DC2626' }]} onPress={clearAllPassengerHistory}>
+                  <Text style={styles.buttonText}>Delete History</Text>
+                </Pressable>
+              </View>
             </View>
 
             <View style={styles.profileCard}>
@@ -4476,7 +4860,146 @@ function RideAppScreen() {
                 <Text style={styles.buttonText}>{homeLocation ? 'Edit Home Location' : 'Set Home Location'}</Text>
               </Pressable>
             </View>
+
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>Support</Text>
+              <Pressable style={[styles.primaryButton, { marginTop: 8, backgroundColor: '#1D4ED8' }]} onPress={() => setShowHelpModal(true)}>
+                <Text style={styles.buttonText}>Help</Text>
+              </Pressable>
+              <Pressable style={[styles.primaryButton, { marginTop: 10, backgroundColor: '#0F766E' }]} onPress={openComplaintEmail}>
+                <Text style={styles.buttonText}>Complaint</Text>
+              </Pressable>
+              <Pressable style={[styles.primaryButton, { marginTop: 10, backgroundColor: '#B91C1C' }]} onPress={logoutFromProfile}>
+                <Text style={styles.buttonText}>Logout</Text>
+              </Pressable>
+            </View>
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal visible={showHelpModal} animationType="slide" onRequestClose={() => setShowHelpModal(false)}>
+        <View style={styles.profileScreenWrap}>
+          <View style={styles.profileScreenHeader}>
+            <Text style={styles.profileScreenTitle}>Help & Community</Text>
+            <Pressable onPress={() => setShowHelpModal(false)}>
+              <Text style={styles.profileScreenClose}>Close</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.profileScreenContent}>
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>Ask a Question</Text>
+              <TextInput
+                style={[styles.profileInput, { minHeight: 90, textAlignVertical: 'top' }]}
+                multiline
+                placeholder="Type your question"
+                value={helpQuestionText}
+                onChangeText={setHelpQuestionText}
+              />
+              <Pressable style={[styles.primaryButton, { marginTop: 10 }]} onPress={postHelpQuestion}>
+                <Text style={styles.buttonText}>Send Question</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>FAQs</Text>
+              <Text style={styles.profileHistoryStatus}>1. How to cancel ride? Open Trip Info and select a reason.</Text>
+              <Text style={styles.profileHistoryStatus}>2. How is fare calculated? Fare depends on distance and demand.</Text>
+              <Text style={styles.profileHistoryStatus}>3. How to report driver issue? Use Trip Info → Driver Issues.</Text>
+              <Text style={styles.profileHistoryStatus}>4. How to contact support? Use Complaint button in Profile.</Text>
+            </View>
+
+            <View style={styles.profileCard}>
+              <Text style={styles.profileCardTitle}>Community Questions</Text>
+              {helpQuestions.length === 0 ? (
+                <Text style={styles.profileValue}>No questions yet. Be the first to ask.</Text>
+              ) : helpQuestions.map((q) => (
+                <View key={q.id} style={styles.profileHistoryRow}>
+                  <Text style={styles.profileHistoryRoute}>{q.question}</Text>
+                  <Text style={styles.profileHistoryStatus}>Asked by {q.askedByName} • {q.askedByPhone || 'N/A'}</Text>
+                  {(q.answers || []).slice().sort((a, b) => (a.createdAtMs || 0) - (b.createdAtMs || 0)).map((ans, idx) => (
+                    <Text key={`${q.id}_ans_${idx}`} style={[styles.profileHistoryStatus, { color: '#155E75' }]}>• {ans.byName}: {ans.text}</Text>
+                  ))}
+                  {!!q.id && (
+                    <>
+                      <TextInput
+                        style={[styles.profileInput, { marginTop: 8 }]}
+                        placeholder="Write an answer"
+                        value={helpAnswerDrafts[q.id] || ''}
+                        onChangeText={(text) => setHelpAnswerDrafts((prev) => ({ ...prev, [q.id!]: text }))}
+                      />
+                      <Pressable style={[styles.primaryButton, { marginTop: 8, backgroundColor: '#0E7490' }]} onPress={() => postHelpAnswer(q.id!)}>
+                        <Text style={styles.buttonText}>Post Answer</Text>
+                      </Pressable>
+                    </>
+                  )}
+                </View>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal visible={showRideStartedGameModal} animationType="slide" onRequestClose={() => setShowRideStartedGameModal(false)}>
+        <View style={styles.rideGameWrap}>
+          <View style={styles.rideGameHeader}>
+            <Pressable onPress={() => setShowRideStartedGameModal(false)}>
+              <Text style={styles.rideGameHeaderBtn}>Back</Text>
+            </Pressable>
+            <Text style={styles.rideGameTitle}>Ride Started</Text>
+            <Pressable onPress={() => setShowRideStartedGameModal(false)}>
+              <Text style={styles.rideGameHeaderBtn}>Main Screen</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.rideCongratsCard}>
+            <Text style={styles.rideCongratsTitle}>🎉 Congratulations</Text>
+            <Text style={styles.rideCongratsSub}>Your ride has started. Enjoy while you travel!</Text>
+            <Text style={styles.rideSparkle}>{rideGameSparkle % 2 === 0 ? '✨🛺✨' : '💫🛺💫'}</Text>
+          </View>
+
+          <View style={styles.rideTrackCard}>
+            <Text style={styles.rideTrackLabel}>Distance Progress</Text>
+            <View style={styles.rideProgressBarBg}>
+              <View style={[styles.rideProgressBarFill, { width: `${rideGameProgress}%` }]} />
+            </View>
+            <Text style={styles.rideTrackMeta}>{Math.round(rideGameProgress)}% route simulated</Text>
+
+            <View style={styles.rideRoadArea}>
+              <View style={styles.rideRoadStripe} />
+              <Text style={[styles.rideAutoIcon, { left: `${Math.min(82, Math.max(8, 50 + rideGameSteer))}%` }]}>🛺</Text>
+            </View>
+
+            <View style={styles.rideControlRow}>
+              <Pressable style={styles.rideControlBtn} onPress={() => setRideGameSteer((prev) => Math.max(-35, prev - 10))}>
+                <Text style={styles.rideControlText}>◀ Steering</Text>
+              </Pressable>
+              <Pressable style={styles.rideControlBtn} onPress={() => setRideGameSteer((prev) => Math.min(35, prev + 10))}>
+                <Text style={styles.rideControlText}>Steering ▶</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.rideControlRow}>
+              <Pressable style={[styles.rideControlBtn, { backgroundColor: '#15803D' }]} onPress={() => setRideGameSpeed((prev) => Math.min(12, prev + 1.8))}>
+                <Text style={styles.rideControlText}>Accelerator</Text>
+              </Pressable>
+              <Pressable style={[styles.rideControlBtn, { backgroundColor: '#B91C1C' }]} onPress={() => setRideGameSpeed((prev) => Math.max(0, prev - 2.2))}>
+                <Text style={styles.rideControlText}>Brake</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.rideGameBottomActions}>
+            <Pressable style={styles.detailsBtn} onPress={() => setShowDetails(true)}><Text style={styles.detailsBtnText}>Trip Info</Text></Pressable>
+            {!!userBookedRide?.id && (
+              <Pressable style={[styles.cancelButton, { marginTop: 8 }]} onPress={() => cancelRide(userBookedRide.id!, false, 'changed_plan')}>
+                <Text style={styles.buttonText}>Cancel Ride</Text>
+              </Pressable>
+            )}
+            <Pressable style={[styles.primaryButton, { marginTop: 8 }]} onPress={() => setShowRideStartedGameModal(false)}>
+              <Text style={styles.buttonText}>Back to Main Screen</Text>
+            </Pressable>
+          </View>
         </View>
       </Modal>
 
@@ -4494,9 +5017,19 @@ function RideAppScreen() {
                   <Text style={styles.historyMeta}>{entry.status === 'completed' ? 'Completed' : 'Cancelled'} • ₹{entry.fare}</Text>
                   {!!entry.driverName && <Text style={styles.historyMeta}>Driver: {entry.driverName}</Text>}
                   <Text style={styles.historyMeta}>{entry.createdAt?.toDate ? entry.createdAt.toDate().toLocaleString() : ''}</Text>
+                  {!!entry.id && (
+                    <Pressable style={[styles.negButton, { marginTop: 8, alignSelf: 'flex-start' }]} onPress={() => deletePassengerHistoryEntry(entry.id!)}>
+                      <Text style={{ color: '#B91C1C', fontWeight: '700' }}>Delete</Text>
+                    </Pressable>
+                  )}
                 </View>
               ))}
             </ScrollView>
+            {passengerHistory.length > 0 && (
+              <Pressable onPress={clearAllPassengerHistory} style={{marginTop: 8, alignSelf:'center'}}>
+                <Text style={{color: '#B91C1C', fontWeight:'bold'}}>Delete All</Text>
+              </Pressable>
+            )}
             <Pressable onPress={() => setShowPassengerHistoryModal(false)} style={{marginTop: 10, alignSelf:'center'}}>
               <Text style={{color: '#007AFF', fontWeight:'bold'}}>Close</Text>
             </Pressable>
@@ -5002,7 +5535,67 @@ function RideAppScreen() {
           setPendingDriverDestinationMarker(driverDestinationMarker);
         }}
       >
+            {/* 28-DAY EARNINGS PAGE */}
+            <Modal visible={showEarningsPage} transparent animationType="slide" onRequestClose={() => setShowEarningsPage(false)}>
+              <View style={styles.modalOverlay}>
+                <View style={styles.detailsModal}>
+                  <Text style={styles.modalTitle}>28-Day Earnings Breakdown</Text>
+                  <ScrollView style={{ maxHeight: 420 }}>
+                    {Object.entries(driverEarningsLast28Days).length === 0 ? (
+                      <Text style={styles.emptyText}>No earnings data for last 28 days.</Text>
+                    ) : (
+                      Object.entries(driverEarningsLast28Days)
+                        .sort((a, b) => {
+                          const [dayA, dateA] = a[0].split('/').map(Number);
+                          const [dayB, dateB] = b[0].split('/').map(Number);
+                          return dateA - dateB;
+                        })
+                        .map(([date, amount]) => (
+                          <View key={date} style={styles.earningsCard}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.earningsDate}>{date}</Text>
+                            </View>
+                            <Text style={styles.earningsAmount}>₹{Math.round(amount)}</Text>
+                          </View>
+                        ))
+                    )}
+                  </ScrollView>
+                  {Object.entries(driverEarningsLast28Days).length > 0 && (
+                    <View style={styles.totalEarningsCard}>
+                      <Text style={styles.totalEarningsLabel}>Total (28 Days)</Text>
+                      <Text style={styles.totalEarningsAmount}>₹{Math.round(Object.values(driverEarningsLast28Days).reduce((sum, x) => sum + x, 0))}</Text>
+                    </View>
+                  )}
+                  <Pressable onPress={() => setShowEarningsPage(false)} style={{marginTop: 10, alignSelf:'center'}}><Text style={{color: '#007AFF', fontWeight:'bold'}}>CLOSE</Text></Pressable>
+                </View>
+              </View>
+            </Modal>
         <View style={styles.driverMapModalWrap}>
+            {/* RATING MODAL - FOR PASSENGERS TO RATE DRIVER */}
+            <Modal visible={showRatingModal} transparent animationType="fade" onRequestClose={() => { setShowRatingModal(false); setSelectedRating(0); }}>
+              <View style={[styles.modalOverlay, { backgroundColor: 'rgba(0,0,0,0.6)' }]}>
+                <View style={[styles.detailsModal, { maxHeight: 350 }]}>
+                  <Text style={styles.modalTitle}>Rate Your Driver</Text>
+                  <Text style={styles.ratingSubtitle}>How was your experience?</Text>
+                  <View style={styles.starsContainer}>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <Pressable key={star} onPress={() => setSelectedRating(star)} style={styles.starButton}>
+                        <Text style={[styles.star, { fontSize: selectedRating >= star ? 40 : 36, color: selectedRating >= star ? '#FFB800' : '#D1D5DB' }]}>★</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Text style={styles.ratingHint}>{selectedRating > 0 ? `You rated ${selectedRating}/5` : 'Tap to rate'}</Text>
+                  <View style={styles.ratingButtonRow}>
+                    <Pressable style={[styles.ratingButton, { backgroundColor: '#EF4444' }]} onPress={() => { setShowRatingModal(false); setSelectedRating(0); }}>
+                      <Text style={styles.ratingButtonText}>Skip</Text>
+                    </Pressable>
+                    <Pressable style={[styles.ratingButton, { backgroundColor: '#16A34A' }]} onPress={() => { submitDriverRating(pendingRideForRating?.id || '', pendingRideForRating?.driverId || '', selectedRating || 4.8); }}>
+                      <Text style={styles.ratingButtonText}>Submit</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </Modal>
           <MapView
             style={styles.driverMapModalMap}
             initialRegion={
@@ -5359,5 +5952,41 @@ const styles = StyleSheet.create({
   goHomeVehicleCard: { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
   goHomeVehicleIcon: { fontSize: 30, marginBottom: 6 },
   goHomeVehicleName: { color: '#1E293B', fontWeight: '800' },
-  goHomeVehicleFare: { color: '#0F766E', fontWeight: '800', marginTop: 2 }
+  goHomeVehicleFare: { color: '#0F766E', fontWeight: '800', marginTop: 2 },
+  rideGameWrap: { flex: 1, backgroundColor: '#0B3A5B' },
+  rideGameHeader: { paddingTop: 52, paddingHorizontal: 14, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#0C4A6E' },
+  rideGameHeaderBtn: { color: '#E0F2FE', fontWeight: '800' },
+  rideGameTitle: { color: '#F8FAFC', fontSize: 19, fontWeight: '900' },
+  rideCongratsCard: { margin: 14, backgroundColor: '#ECFEFF', borderRadius: 18, borderWidth: 1, borderColor: '#67E8F9', padding: 14, alignItems: 'center' },
+  rideCongratsTitle: { color: '#0C4A6E', fontWeight: '900', fontSize: 22 },
+  rideCongratsSub: { color: '#155E75', marginTop: 4, textAlign: 'center', fontWeight: '700' },
+  rideSparkle: { fontSize: 28, marginTop: 6 },
+  rideTrackCard: { marginHorizontal: 14, backgroundColor: '#F8FAFC', borderRadius: 18, borderWidth: 1, borderColor: '#CBD5E1', padding: 14 },
+  rideTrackLabel: { color: '#0F172A', fontWeight: '800' },
+  rideProgressBarBg: { marginTop: 8, height: 12, backgroundColor: '#DBEAFE', borderRadius: 999, overflow: 'hidden' },
+  rideProgressBarFill: { height: '100%', backgroundColor: '#2563EB' },
+  rideTrackMeta: { marginTop: 8, color: '#475569', fontWeight: '700' },
+  rideRoadArea: { marginTop: 12, height: 130, backgroundColor: '#111827', borderRadius: 14, position: 'relative', overflow: 'hidden' },
+  rideRoadStripe: { position: 'absolute', top: 0, bottom: 0, left: '50%', width: 4, marginLeft: -2, backgroundColor: '#FCD34D' },
+  rideAutoIcon: { position: 'absolute', bottom: 10, marginLeft: -16, fontSize: 34 },
+  rideControlRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  rideControlBtn: { flex: 1, backgroundColor: '#1E3A8A', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  rideControlText: { color: '#FFFFFF', fontWeight: '800' },
+  rideGameBottomActions: { marginTop: 12, marginHorizontal: 14, paddingBottom: 20 },
+  // EARNINGS PAGE STYLES
+  earningsCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },
+  earningsDate: { fontSize: 14, fontWeight: '700', color: '#1F2937' },
+  earningsAmount: { fontSize: 16, fontWeight: '900', color: '#059669' },
+  totalEarningsCard: { backgroundColor: '#F0FDF4', borderWidth: 2, borderColor: '#22C55E', borderRadius: 14, padding: 14, alignItems: 'center', marginTop: 10 },
+  totalEarningsLabel: { fontSize: 13, fontWeight: '700', color: '#16A34A', marginBottom: 4 },
+  totalEarningsAmount: { fontSize: 28, fontWeight: '900', color: '#16A34A' },
+  // RATING STYLES
+  ratingSubtitle: { fontSize: 14, color: '#6B7280', marginBottom: 16, textAlign: 'center', fontWeight: '600' },
+  starsContainer: { flexDirection: 'row', justifyContent: 'center', gap: 10, marginBottom: 16, marginTop: 10 },
+  starButton: { padding: 8 },
+  star: { fontWeight: '900' },
+  ratingHint: { fontSize: 12, color: '#9CA3AF', textAlign: 'center', marginBottom: 16, fontWeight: '600' },
+  ratingButtonRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  ratingButton: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  ratingButtonText: { color: 'white', fontWeight: '700', fontSize: 14 }
 });
