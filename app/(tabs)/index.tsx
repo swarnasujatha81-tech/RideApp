@@ -220,35 +220,140 @@ const HYDERABAD_CENTER: Coord = { latitude: 17.385, longitude: 78.4867 };
 const HYDERABAD_SERVICE_RADIUS_KM = 40;
 const HYDERABAD_POPULAR_AREAS = [
   'Ameerpet',
-  'Erragadda',
-  'Miyapur',
-  'KPHB',
-  'Kukatpally',
-  'Abids',
-  'Koti',
-  'Begumpet',
-  'Panjagutta',
-  'Somajiguda',
-  'Hitech City',
-  'Madhapur',
-  'Gachibowli',
-  'Kondapur',
-  'Jubilee Hills',
-  'Banjara Hills',
-  'Secunderabad',
-  'Dilsukhnagar',
-  'LB Nagar',
-  'Uppal',
-  'Mehdipatnam',
-  'Tolichowki',
-  'Shamshabad',
-  'Nampally',
-  'Malakpet',
-  'Himayatnagar',
-  'Chikkadpally',
-  'Tarnaka',
+  'Amberpet',
+  'Apollo Hospitals Jubilee Hills',
+  'Aramghar',
+  'Asif Nagar',
+  'Assembly',
+  'Arts College railway station',
+  'Asian Cine Square Mall',
+  'AIG Hospitals Gachibowli',
   'Balanagar',
-  'Moosapet'
+  'Barkatpura',
+  'Bharat Nagar',
+  'Bharat Nagar railway station',
+  'Begumpet',
+  'Begumpet railway station',
+  'BN Reddy Nagar',
+  'Bolarum',
+  'Botanical Garden',
+  'Botanical Garden Kondapur',
+  'Budvel',
+  'Care Hospitals Banjara Hills',
+  'Charminar',
+  'Chaitanyapuri',
+  'Chandrayangutta',
+  'Chandanagar',
+  'Champapet',
+  'Chikkadpally',
+  'City Center Mall',
+  'CMR Central Mall',
+  'Current Location',
+  'Dabirpura railway station',
+  'Dilsukhnagar',
+  'Durgam Cheruvu',
+  'DSL Virtue Mall',
+  'ESI Hospital',
+  'Falaknuma',
+  'Falaknuma railway station',
+  'Fateh Nagar railway station',
+  'Financial District',
+  'Forum Sujana Mall',
+  'Gachibowli',
+  'Gandhi Bhavan',
+  'Gandhi Hospital',
+  'Global Hospitals Lakdikapul',
+  'Golnaka',
+  'Gudimalkapur',
+  'Hafeezpet railway station',
+  'Habsiguda',
+  'Himayatnagar',
+  'Hi-Tech City railway station',
+  'Hitech City',
+  'Hyderabad Deccan railway station',
+  'Hyderguda',
+  'Inorbit Mall',
+  'Irrum Manzil',
+  'Irrum Manzil Galleria Mall',
+  'Isnapur',
+  'JNTU College',
+  'JBS Parade Ground',
+  'Jamai Osmania railway station',
+  'Jalagam Vengal Rao Park',
+  'Jeedimetla',
+  'Jubilee Hills Check Post',
+  'Jubilee Hills Road No. 5',
+  'Kacheguda railway station',
+  'KBR National Park',
+  'KIMS Hospitals Secunderabad',
+  'Kondapur',
+  'Kothaguda',
+  'Kothapet',
+  'Kothapet (road stops)',
+  'Koti',
+  'Krishna Kanth Park',
+  'Lakdi-ka-pul',
+  'LB Nagar',
+  'Lumbini Park',
+  'Madhapur',
+  'Madhura Nagar',
+  'Manikonda',
+  'Manjeera Mall',
+  'Mettuguda',
+  'MG Bus Station',
+  'Musarambagh',
+  'Musheerabad',
+  'Nampally',
+  'Nanakramguda',
+  'Nehru Zoological Park',
+  'New Market',
+  'NMDC',
+  'NTR Gardens',
+  'NIMS Hospital Punjagutta',
+  'Narayanguda',
+  'Nagole',
+  'Nature Cure Hospital railway station',
+  'Next Galleria Mall',
+  'Osmania General Hospital',
+  'Osmania Medical College',
+  'Panjagutta',
+  'Parade Ground',
+  'Patancheru',
+  'Peddamma Temple',
+  'Puppalaguda',
+  'Public Gardens Hyderabad',
+  'Punjagutta',
+  'Prakash Nagar',
+  'Rajendranagar',
+  'Rasoolpura',
+  'Raidurg',
+  'Rainbow Children\'s Hospital Banjara Hills',
+  'Sanjeevaiah Park',
+  'Sarath City Capital Mall',
+  'Saroornagar',
+  'Secunderabad',
+  'Secunderabad East',
+  'Secunderabad Junction railway station',
+  'Secunderabad West',
+  'Shaikpet',
+  'Shalibanda',
+  'Shamshabad',
+  'Shilparamam',
+  'Sitafalmandi railway station',
+  'South India Shopping Mall',
+  'SR Nagar',
+  'Stadium',
+  'Suchitra',
+  'Sunshine Hospitals Secunderabad',
+  'Tarnaka',
+  'Tolichowki',
+  'Uppal',
+  'Uppuguda',
+  'Vanasthalipuram',
+  'Victoria Memorial',
+  'Vidyanagar',
+  'Yusufguda',
+  'Zoo Park'
 ];
 const HYDERABAD_POPULAR_AREA_POINTS: Array<{ name: string; coord: Coord }> = [
   { name: 'Ameerpet', coord: { latitude: 17.4375, longitude: 78.4483 } },
@@ -256,31 +361,127 @@ const HYDERABAD_POPULAR_AREA_POINTS: Array<{ name: string; coord: Coord }> = [
   { name: 'Miyapur', coord: { latitude: 17.4960, longitude: 78.3578 } },
   { name: 'KPHB', coord: { latitude: 17.4948, longitude: 78.3996 } },
   { name: 'Kukatpally', coord: { latitude: 17.4850, longitude: 78.4138 } },
-  { name: 'Abids', coord: { latitude: 17.3923, longitude: 78.4761 } },
-  { name: 'Koti', coord: { latitude: 17.3850, longitude: 78.4867 } },
-  { name: 'Begumpet', coord: { latitude: 17.4447, longitude: 78.4666 } },
-  { name: 'Panjagutta', coord: { latitude: 17.4316, longitude: 78.4521 } },
-  { name: 'Somajiguda', coord: { latitude: 17.4239, longitude: 78.4632 } },
-  { name: 'Hitech City', coord: { latitude: 17.4497, longitude: 78.3824 } },
-  { name: 'Madhapur', coord: { latitude: 17.4486, longitude: 78.3915 } },
-  { name: 'Gachibowli', coord: { latitude: 17.4401, longitude: 78.3489 } },
-  { name: 'Kondapur', coord: { latitude: 17.4698, longitude: 78.3656 } },
-  { name: 'Jubilee Hills', coord: { latitude: 17.4320, longitude: 78.4070 } },
-  { name: 'Banjara Hills', coord: { latitude: 17.4126, longitude: 78.4392 } },
-  { name: 'Secunderabad', coord: { latitude: 17.4399, longitude: 78.4983 } },
-  { name: 'Dilsukhnagar', coord: { latitude: 17.3688, longitude: 78.5247 } },
-  { name: 'LB Nagar', coord: { latitude: 17.3457, longitude: 78.5522 } },
-  { name: 'Uppal', coord: { latitude: 17.4058, longitude: 78.5591 } },
-  { name: 'Mehdipatnam', coord: { latitude: 17.3950, longitude: 78.4325 } },
-  { name: 'Tolichowki', coord: { latitude: 17.3996, longitude: 78.4120 } },
-  { name: 'Shamshabad', coord: { latitude: 17.2543, longitude: 78.3996 } },
-  { name: 'Nampally', coord: { latitude: 17.3920, longitude: 78.4678 } },
-  { name: 'Malakpet', coord: { latitude: 17.3731, longitude: 78.5022 } },
-  { name: 'Himayatnagar', coord: { latitude: 17.4025, longitude: 78.4820 } },
-  { name: 'Chikkadpally', coord: { latitude: 17.4049, longitude: 78.4950 } },
-  { name: 'Tarnaka', coord: { latitude: 17.4286, longitude: 78.5382 } },
   { name: 'Balanagar', coord: { latitude: 17.4766, longitude: 78.4486 } },
-  { name: 'Moosapet', coord: { latitude: 17.4686, longitude: 78.4302 } }
+  { name: 'Moosapet', coord: { latitude: 17.4686, longitude: 78.4302 } },
+  { name: 'Bharat Nagar', coord: { latitude: 17.4810, longitude: 78.4050 } },
+  { name: 'SR Nagar', coord: { latitude: 17.4300, longitude: 78.4225 } },
+  { name: 'Khairatabad', coord: { latitude: 17.4048, longitude: 78.4590 } },
+  { name: 'Lakdi-ka-pul', coord: { latitude: 17.3987, longitude: 78.4899 } },
+  { name: 'Nampally', coord: { latitude: 17.3920, longitude: 78.4678 } },
+  { name: 'Gandhi Bhavan', coord: { latitude: 17.4001, longitude: 78.4748 } },
+  { name: 'Osmania Medical College', coord: { latitude: 17.4150, longitude: 78.4788 } },
+  { name: 'MG Bus Station', coord: { latitude: 17.4258, longitude: 78.4485 } },
+  { name: 'Malakpet', coord: { latitude: 17.3731, longitude: 78.5022 } },
+  { name: 'Dilsukhnagar', coord: { latitude: 17.3688, longitude: 78.5247 } },
+  { name: 'Chaitanyapuri', coord: { latitude: 17.3556, longitude: 78.5186 } },
+  { name: 'LB Nagar', coord: { latitude: 17.3457, longitude: 78.5522 } },
+  { name: 'Nagole', coord: { latitude: 17.3641, longitude: 78.5556 } },
+  { name: 'Uppal', coord: { latitude: 17.4058, longitude: 78.5591 } },
+  { name: 'Tarnaka', coord: { latitude: 17.4286, longitude: 78.5382 } },
+  { name: 'Mettuguda', coord: { latitude: 17.4170, longitude: 78.5290 } },
+  { name: 'Secunderabad East', coord: { latitude: 17.4537, longitude: 78.5000 } },
+  { name: 'Parade Ground', coord: { latitude: 17.4430, longitude: 78.4913 } },
+  { name: 'Paradise', coord: { latitude: 17.3968, longitude: 78.4738 } },
+  { name: 'Prakash Nagar', coord: { latitude: 17.4395, longitude: 78.4887 } },
+  { name: 'Madhura Nagar', coord: { latitude: 17.4515, longitude: 78.4979 } },
+  { name: 'Yusufguda', coord: { latitude: 17.4527, longitude: 78.4923 } },
+  { name: 'Jubilee Hills Check Post', coord: { latitude: 17.4310, longitude: 78.4118 } },
+  { name: 'Peddamma Temple', coord: { latitude: 17.4250, longitude: 78.4072 } },
+  { name: 'Raidurg', coord: { latitude: 17.4250, longitude: 78.3872 } },
+  { name: 'Musheerabad', coord: { latitude: 17.4433, longitude: 78.5112 } },
+  { name: 'RTC Cross Roads', coord: { latitude: 17.4153, longitude: 78.4481 } },
+  { name: 'Narayanguda', coord: { latitude: 17.4031, longitude: 78.5056 } },
+  { name: 'Sultan Bazaar', coord: { latitude: 17.3865, longitude: 78.4830 } },
+  { name: 'Financial District', coord: { latitude: 17.4311, longitude: 78.3875 } },
+  { name: 'Nanakramguda', coord: { latitude: 17.4562, longitude: 78.3577 } },
+  { name: 'Kothaguda', coord: { latitude: 17.4484, longitude: 78.3870 } },
+  { name: 'Shilparamam', coord: { latitude: 17.4382, longitude: 78.3999 } },
+  { name: 'Lingampally', coord: { latitude: 17.4870, longitude: 78.3777 } },
+  { name: 'Nalagandla', coord: { latitude: 17.4327, longitude: 78.3785 } },
+  { name: 'Chandanagar', coord: { latitude: 17.4852, longitude: 78.3322 } },
+  { name: 'Patancheru', coord: { latitude: 17.4849, longitude: 78.1686 } },
+  { name: 'Isnapur', coord: { latitude: 17.4299, longitude: 78.2952 } },
+  { name: 'Mehdipatnam', coord: { latitude: 17.3950, longitude: 78.4325 } },
+  { name: 'Attapur', coord: { latitude: 17.3675, longitude: 78.4295 } },
+  { name: 'Hyderguda', coord: { latitude: 17.3989, longitude: 78.4764 } },
+  { name: 'Shaikpet', coord: { latitude: 17.3901, longitude: 78.4138 } },
+  { name: 'Manikonda', coord: { latitude: 17.4377, longitude: 78.3905 } },
+  { name: 'Puppalaguda', coord: { latitude: 17.3720, longitude: 78.3983 } },
+  { name: 'Masab Tank', coord: { latitude: 17.4217, longitude: 78.4724 } },
+  { name: 'NMDC', coord: { latitude: 17.4267, longitude: 78.4074 } },
+  { name: 'Asif Nagar', coord: { latitude: 17.4069, longitude: 78.4141 } },
+  { name: 'Gudimalkapur', coord: { latitude: 17.3830, longitude: 78.4563 } },
+  { name: 'Charminar', coord: { latitude: 17.3616, longitude: 78.4747 } },
+  { name: 'Shalibanda', coord: { latitude: 17.3601, longitude: 78.4790 } },
+  { name: 'Falaknuma', coord: { latitude: 17.3665, longitude: 78.4750 } },
+  { name: 'Chandrayangutta', coord: { latitude: 17.3470, longitude: 78.4830 } },
+  { name: 'Uppuguda', coord: { latitude: 17.3591, longitude: 78.4922 } },
+  { name: 'Bahadurpura', coord: { latitude: 17.3634, longitude: 78.4836 } },
+  { name: 'Amberpet', coord: { latitude: 17.3990, longitude: 78.5030 } },
+  { name: 'Golnaka', coord: { latitude: 17.4052, longitude: 78.5201 } },
+  { name: 'Adikmet', coord: { latitude: 17.3995, longitude: 78.4970 } },
+  { name: 'Vidyanagar', coord: { latitude: 17.4327, longitude: 78.4672 } },
+  { name: 'Barkatpura', coord: { latitude: 17.3950, longitude: 78.5000 } },
+  { name: 'Kothapet', coord: { latitude: 17.3668, longitude: 78.5169 } },
+  { name: 'Saroornagar', coord: { latitude: 17.3520, longitude: 78.5406 } },
+  { name: 'Champapet', coord: { latitude: 17.3461, longitude: 78.5230 } },
+  { name: 'BN Reddy Nagar', coord: { latitude: 17.3684, longitude: 78.5185 } },
+  { name: 'Vanasthalipuram', coord: { latitude: 17.3257, longitude: 78.5369 } },
+  { name: 'Hayathnagar', coord: { latitude: 17.3174, longitude: 78.5477 } },
+  { name: 'Alwal', coord: { latitude: 17.5000, longitude: 78.5143 } },
+  { name: 'Tirumalagiri', coord: { latitude: 17.4516, longitude: 78.4930 } },
+  { name: 'Bolarum', coord: { latitude: 17.5063, longitude: 78.5333 } },
+  { name: 'Suchitra', coord: { latitude: 17.4841, longitude: 78.4294 } },
+  { name: 'Jeedimetla', coord: { latitude: 17.4873, longitude: 78.4055 } },
+  { name: 'Kompally', coord: { latitude: 17.5506, longitude: 78.4298 } },
+  { name: 'Medchal', coord: { latitude: 17.5937, longitude: 78.4318 } },
+  { name: 'Sarath City Capital Mall', coord: { latitude: 17.4493, longitude: 78.3349 } },
+  { name: 'Inorbit Mall', coord: { latitude: 17.4571, longitude: 78.3561 } },
+  { name: 'Forum Sujana Mall', coord: { latitude: 17.4479, longitude: 78.3801 } },
+  { name: 'GVK One Mall', coord: { latitude: 17.4424, longitude: 78.4067 } },
+  { name: 'Next Galleria Mall', coord: { latitude: 17.4325, longitude: 78.4114 } },
+  { name: 'Irrum Manzil Galleria Mall', coord: { latitude: 17.4325, longitude: 78.4505 } },
+  { name: 'Central Mall Punjagutta', coord: { latitude: 17.4300, longitude: 78.4530 } },
+  { name: 'City Center Mall', coord: { latitude: 17.4570, longitude: 78.3688 } },
+  { name: 'Manjeera Mall', coord: { latitude: 17.4446, longitude: 78.3993 } },
+  { name: 'Asian Cine Square Mall', coord: { latitude: 17.4401, longitude: 78.3869 } },
+  { name: 'CMR Central Mall', coord: { latitude: 17.4494, longitude: 78.3824 } },
+  { name: 'South India Shopping Mall', coord: { latitude: 17.4108, longitude: 78.4097 } },
+  { name: 'Rainbow Children\'s Hospital Banjara Hills', coord: { latitude: 17.4142, longitude: 78.4413 } },
+  { name: 'Yashoda Hospitals Secunderabad', coord: { latitude: 17.4390, longitude: 78.5090 } },
+  { name: 'KIMS Hospitals Secunderabad', coord: { latitude: 17.4322, longitude: 78.5069 } },
+  { name: 'Continental Hospitals Gachibowli', coord: { latitude: 17.4422, longitude: 78.3522 } },
+  { name: 'AIG Hospitals Gachibowli', coord: { latitude: 17.4299, longitude: 78.3364 } },
+  { name: 'Sunshine Hospitals Secunderabad', coord: { latitude: 17.4551, longitude: 78.5164 } },
+  { name: 'Global Hospitals Lakdikapul', coord: { latitude: 17.4068, longitude: 78.4891 } },
+  { name: 'Osmania General Hospital', coord: { latitude: 17.4159, longitude: 78.4827 } },
+  { name: 'NIMS Hospital Punjagutta', coord: { latitude: 17.4318, longitude: 78.4451 } },
+  { name: 'KBR National Park', coord: { latitude: 17.4370, longitude: 78.4099 } },
+  { name: 'Lumbini Park', coord: { latitude: 17.4324, longitude: 78.4174 } },
+  { name: 'Sanjeevaiah Park', coord: { latitude: 17.4318, longitude: 78.4165 } },
+  { name: 'NTR Gardens', coord: { latitude: 17.4235, longitude: 78.4124 } },
+  { name: 'Indira Park', coord: { latitude: 17.4180, longitude: 78.4781 } },
+  { name: 'Jalagam Vengal Rao Park', coord: { latitude: 17.3982, longitude: 78.4015 } },
+  { name: 'Krishna Kanth Park', coord: { latitude: 17.4391, longitude: 78.3856 } },
+  { name: 'Public Gardens Hyderabad', coord: { latitude: 17.3875, longitude: 78.4767 } },
+  { name: 'Nehru Zoological Park', coord: { latitude: 17.3936, longitude: 78.4436 } },
+  { name: 'Secunderabad Junction railway station', coord: { latitude: 17.4397, longitude: 78.4986 } },
+  { name: 'Hyderabad Deccan railway station', coord: { latitude: 17.3882, longitude: 78.4867 } },
+  { name: 'Kacheguda railway station', coord: { latitude: 17.3775, longitude: 78.5036 } },
+  { name: 'Lingampalli railway station', coord: { latitude: 17.5015, longitude: 78.3706 } },
+  { name: 'Hafeezpet railway station', coord: { latitude: 17.4505, longitude: 78.3660 } },
+  { name: 'Hi-Tech City railway station', coord: { latitude: 17.4477, longitude: 78.3796 } },
+  { name: 'Borabanda railway station', coord: { latitude: 17.5010, longitude: 78.3916 } },
+  { name: 'Sanat Nagar railway station', coord: { latitude: 17.3997, longitude: 78.4778 } },
+  { name: 'Fateh Nagar railway station', coord: { latitude: 17.4761, longitude: 78.4018 } },
+  { name: 'Nature Cure Hospital railway station', coord: { latitude: 17.4140, longitude: 78.4540 } },
+  { name: 'Yakutpura railway station', coord: { latitude: 17.3736, longitude: 78.4871 } },
+  { name: 'Dabirpura railway station', coord: { latitude: 17.3833, longitude: 78.4986 } },
+  { name: 'Malakpet railway station', coord: { latitude: 17.3724, longitude: 78.5029 } },
+  { name: 'Uppuguda railway station', coord: { latitude: 17.3570, longitude: 78.4888 } },
+  { name: 'Sitafalmandi railway station', coord: { latitude: 17.4347, longitude: 78.5017 } },
+  { name: 'Jamai Osmania railway station', coord: { latitude: 17.4051, longitude: 78.5001 } },
+  { name: 'Vidyanagar railway station', coord: { latitude: 17.4318, longitude: 78.4684 } }
 ];
 const DEFAULT_MAP_REGION = {
   ...HYDERABAD_CENTER,
@@ -380,6 +581,8 @@ function RideAppScreen() {
   const [pickupCoords, setPickupCoords] = useState<Coord | null>(null);
   const [destination, setDestination] = useState('');
   const [destCoords, setDestCoords] = useState<Coord | null>(null);
+  const [activeSearchField, setActiveSearchField] = useState<'pickup' | 'drop' | null>(null);
+  const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [selectedRide, setSelectedRide] = useState<RideType | null>(null);
   const [rides, setRides] = useState<Ride[]>([]);
   const [ignoredRides, setIgnoredRides] = useState<string[]>([]);
@@ -1032,12 +1235,111 @@ function RideAppScreen() {
   const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
   const isValidVehiclePlate = (val: string) => /^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$/.test(val.toUpperCase());
 
+  const normalizeSearchString = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[\s\-()\[\]\/_,]+/g, ' ')
+      .replace(/[^a-z0-9 ]/g, '')
+      .trim();
+
+  const getLevenshteinDistance = (a: string, b: string) => {
+    const matrix: number[][] = Array.from({ length: a.length + 1 }, () => []);
+    for (let i = 0; i <= a.length; i += 1) matrix[i][0] = i;
+    for (let j = 0; j <= b.length; j += 1) matrix[0][j] = j;
+
+    for (let i = 1; i <= a.length; i += 1) {
+      for (let j = 1; j <= b.length; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + cost
+        );
+      }
+    }
+
+    return matrix[a.length][b.length];
+  };
+
+  const getClosestPopularAreaMatch = (query: string) => {
+    const normalizedQuery = normalizeSearchString(query);
+    if (!normalizedQuery) return null;
+
+    const candidates = HYDERABAD_POPULAR_AREAS.map((area) => ({
+      area,
+      normalizedArea: normalizeSearchString(area),
+    }));
+
+    const exactMatch = candidates
+      .filter(
+        (candidate) =>
+          normalizedQuery.includes(candidate.normalizedArea) ||
+          candidate.normalizedArea.includes(normalizedQuery)
+      )
+      .sort((a, b) => b.normalizedArea.length - a.normalizedArea.length)[0];
+    if (exactMatch) return exactMatch.area;
+
+    const bestMatch = candidates.reduce<{ area: string; score: number } | null>((current, { area, normalizedArea }) => {
+      const score = getLevenshteinDistance(normalizedQuery, normalizedArea);
+      if (!current || score < current.score) {
+        return { area, score };
+      }
+      return current;
+    }, null);
+
+    if (!bestMatch) return null;
+
+    const threshold = Math.max(2, Math.floor(normalizedQuery.length * 0.25));
+    return bestMatch.score <= threshold ? bestMatch.area : null;
+  };
+
+  const getSearchSuggestions = (query: string) => {
+    const normalizedQuery = normalizeSearchString(query);
+    if (!normalizedQuery || normalizedQuery === 'current location') return [];
+
+    const queryTerms = normalizedQuery.split(' ').filter(Boolean);
+    if (!queryTerms.length) return [];
+
+    return HYDERABAD_POPULAR_AREAS
+      .map((area) => {
+        const normalizedArea = normalizeSearchString(area);
+        const termScore = queryTerms.reduce((score, term) => score + (normalizedArea.includes(term) ? term.length : 0), 0);
+        const exactScore = normalizedArea.startsWith(normalizedQuery) ? 100 : 0;
+        return { area, score: exactScore + termScore };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 4)
+      .map((item) => item.area);
+  };
+
+  const handleSearchFieldFocus = (field: 'pickup' | 'drop') => {
+    if (!isPassengerCardExpanded) animatePassengerCard(true);
+    setActiveSearchField(field);
+    const query = field === 'pickup' ? pickupInput : destination;
+    setSearchSuggestions(getSearchSuggestions(query));
+  };
+
+  const applySearchSuggestion = async (field: 'pickup' | 'drop', suggestion: string) => {
+    setActiveSearchField(null);
+    setSearchSuggestions([]);
+    if (field === 'pickup') {
+      setPickupInput(suggestion);
+    } else {
+      setDestination(suggestion);
+    }
+    await handleSearch(field, suggestion);
+  };
+
   const getPrimaryAreaName = (address: string | undefined, fallback: string) => {
     if (!address?.trim()) return fallback;
 
     const lowerAddress = address.toLowerCase();
     const matchedPopularArea = HYDERABAD_POPULAR_AREAS.find((area) => lowerAddress.includes(area.toLowerCase()));
     if (matchedPopularArea) return matchedPopularArea;
+
+    const fuzzyArea = getClosestPopularAreaMatch(address);
+    if (fuzzyArea) return fuzzyArea;
 
     const firstSegment = address
       .split(',')
@@ -1067,7 +1369,6 @@ function RideAppScreen() {
     const mandalPart = parts.find((segment) => /\bmandal\b/i.test(segment));
     if (mandalPart) return mandalPart;
 
-    // For addresses without explicit "mandal", use the second meaningful segment.
     const secondPart = parts[1];
     if (secondPart) return secondPart;
 
@@ -2798,10 +3099,18 @@ function RideAppScreen() {
     setShowTipModal(false);
   };
 
-  const handleSearch = async (type: 'pickup' | 'drop') => {
-    const queryStr = type === 'pickup' ? pickupInput : destination;
+  const handleSearch = async (type: 'pickup' | 'drop', explicitQuery?: string) => {
+    const queryStr = explicitQuery ?? (type === 'pickup' ? pickupInput : destination);
     if (!queryStr || queryStr === 'Current Location') return;
-    const res = await Location.geocodeAsync(queryStr);
+
+    const closestArea = getClosestPopularAreaMatch(queryStr);
+    const queryToUse = closestArea || queryStr;
+    let res = await Location.geocodeAsync(queryToUse);
+
+    if (res.length === 0 && closestArea && queryToUse !== queryStr) {
+      res = await Location.geocodeAsync(queryStr);
+    }
+
     if (res.length > 0) {
       const coord = { latitude: res[0].latitude, longitude: res[0].longitude };
       if (!isWithinHyderabadService(coord)) {
@@ -4071,8 +4380,10 @@ function RideAppScreen() {
                       style={styles.input}
                       placeholder="Pickup Area"
                       value={pickupInput}
+                      onFocus={() => handleSearchFieldFocus('pickup')}
                       onChangeText={(v) => {
                         setPickupInput(v);
+                        setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('pickup')}
                     />
@@ -4080,11 +4391,26 @@ function RideAppScreen() {
                       style={styles.input}
                       placeholder="Drop Area"
                       value={destination}
+                      onFocus={() => handleSearchFieldFocus('drop')}
                       onChangeText={(v) => {
                         setDestination(v);
+                        setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('drop')}
                     />
+                    {!!searchSuggestions.length && activeSearchField && (
+                      <View style={styles.searchSuggestionPanel}>
+                        {searchSuggestions.map((suggestion) => (
+                          <TouchableOpacity
+                            key={suggestion}
+                            style={styles.searchSuggestionItem}
+                            onPress={() => void applySearchSuggestion(activeSearchField, suggestion)}
+                          >
+                            <Text style={styles.searchSuggestionText}>{suggestion}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
 
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
                       {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (
@@ -4202,8 +4528,10 @@ function RideAppScreen() {
                       style={styles.input}
                       placeholder="Pickup Area"
                       value={pickupInput}
+                      onFocus={() => handleSearchFieldFocus('pickup')}
                       onChangeText={(v) => {
                         setPickupInput(v);
+                        setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('pickup')}
                     />
@@ -4211,11 +4539,26 @@ function RideAppScreen() {
                       style={styles.input}
                       placeholder="Drop Area"
                       value={destination}
+                      onFocus={() => handleSearchFieldFocus('drop')}
                       onChangeText={(v) => {
                         setDestination(v);
+                        setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('drop')}
                     />
+                    {!!searchSuggestions.length && activeSearchField && (
+                      <View style={styles.searchSuggestionPanel}>
+                        {searchSuggestions.map((suggestion) => (
+                          <TouchableOpacity
+                            key={suggestion}
+                            style={styles.searchSuggestionItem}
+                            onPress={() => void applySearchSuggestion(activeSearchField, suggestion)}
+                          >
+                            <Text style={styles.searchSuggestionText}>{suggestion}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
                       {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (
                         <Pressable
@@ -5727,6 +6070,9 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
   primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
   currentLocationHintText: { marginTop: 6, fontSize: 11, color: '#6B7280', textAlign: 'center' },
+  searchSuggestionPanel: { backgroundColor: '#F8FAFA', borderColor: '#E2E8F0', borderWidth: 1, borderRadius: 16, padding: 8, marginBottom: 10, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  searchSuggestionItem: { paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, backgroundColor: '#FFFFFF', marginBottom: 8, borderWidth: 1, borderColor: '#E5E7EB' },
+  searchSuggestionText: { color: '#0F172A', fontSize: 14, fontWeight: '700' },
   cancelButton: { backgroundColor: '#FF3B30', padding: 12, borderRadius: 12, alignItems: 'center', marginTop: 10 },
   buttonText: { color: 'white', fontWeight: 'bold' },
   rideCard: { width: 85, padding: 10, backgroundColor: '#fff', marginRight: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E5E5EA' },
