@@ -20,7 +20,6 @@ import React, { Component, useCallback, useEffect, useMemo, useRef, useState } f
 import {
   Alert,
   Animated,
-  AppState,
   Dimensions,
   FlatList,
   Image,
@@ -640,7 +639,10 @@ function RideAppScreen() {
   const arrivalAutoPulse = useRef(new Animated.Value(0)).current;
   const driverPromoPulse = useRef(new Animated.Value(0)).current;
   const [shareAutoFoundMembers, setShareAutoFoundMembers] = useState(0);
-  const autoCancelInProgressRef = useRef(false);
+  const waitingCancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const waitingCancelRideIdRef = useRef<string | null>(null);
+  const userBookedRideRef = useRef<Ride | null>(null);
+  const cancelRideRef = useRef<((id: string, isDriver: boolean, reason?: string) => Promise<void>) | null>(null);
   const lastUserRideStateRef = useRef<{ id: string; status: Ride['status'] } | null>(null);
   const [showShareAutoGame, setShowShareAutoGame] = useState(false);
   const [shareAutoGamePausedByRide, setShareAutoGamePausedByRide] = useState(false);
@@ -3742,24 +3744,49 @@ function RideAppScreen() {
     }
   };
 
+  userBookedRideRef.current = userBookedRide;
+  cancelRideRef.current = cancelRide;
+
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      const shouldAutoCancel =
-        mode === 'USER' &&
-        !!userBookedRide?.id &&
-        (userBookedRide.status === 'waiting' || userBookedRide.status === 'accepted') &&
-        nextState !== 'active';
+    if (mode !== 'USER') {
+      if (waitingCancelTimerRef.current) {
+        clearTimeout(waitingCancelTimerRef.current);
+        waitingCancelTimerRef.current = null;
+        waitingCancelRideIdRef.current = null;
+      }
+      return;
+    }
 
-      if (!shouldAutoCancel || autoCancelInProgressRef.current) return;
+    if (userBookedRide?.id && userBookedRide.status === 'waiting') {
+      if (waitingCancelRideIdRef.current !== userBookedRide.id) {
+        if (waitingCancelTimerRef.current) {
+          clearTimeout(waitingCancelTimerRef.current);
+          waitingCancelTimerRef.current = null;
+        }
 
-      autoCancelInProgressRef.current = true;
-      cancelRide(userBookedRide!.id!, false, 'left_screen')
-        .finally(() => {
-          autoCancelInProgressRef.current = false;
-        });
-    });
+        waitingCancelRideIdRef.current = userBookedRide.id;
+        const rideId = userBookedRide.id;
+        waitingCancelTimerRef.current = setTimeout(async () => {
+          const latestRide = userBookedRideRef.current;
+          if (!latestRide || latestRide.id !== rideId || latestRide.status !== 'waiting') return;
+          if (!cancelRideRef.current) return;
+          await cancelRideRef.current(rideId, false, 'no_driver_accepted');
+        }, 4 * 60 * 1000);
+      }
+    } else {
+      if (waitingCancelTimerRef.current) {
+        clearTimeout(waitingCancelTimerRef.current);
+        waitingCancelTimerRef.current = null;
+        waitingCancelRideIdRef.current = null;
+      }
+    }
 
-    return () => subscription.remove();
+    return () => {
+      if (waitingCancelTimerRef.current) {
+        clearTimeout(waitingCancelTimerRef.current);
+        waitingCancelTimerRef.current = null;
+      }
+    };
   }, [mode, userBookedRide?.id, userBookedRide?.status]);
 
   useEffect(() => {
