@@ -5,36 +5,36 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-  createUserWithEmailAndPassword,
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword,
-  signOut
+    createUserWithEmailAndPassword,
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+    signOut
 } from 'firebase/auth';
 import {
-  addDoc, arrayUnion, collection,
-  deleteDoc,
-  deleteField,
-  doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
+    addDoc, arrayUnion, collection,
+    deleteDoc,
+    deleteField,
+    doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Animated,
-  Dimensions,
-  FlatList,
-  Image,
-  Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
-  StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
+    Alert,
+    Animated,
+    Dimensions,
+    FlatList,
+    Image,
+    Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
+    StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import {
-  FARE_ADJUSTMENTS,
-  PricingDemandLevel,
-  PricingRideType,
-  SHARE_AUTO_FARE_SETTINGS,
-  SURGE_SETTINGS,
-  VEHICLE_DISTANCE_SLABS,
-  VEHICLE_FARE_SETTINGS,
+    FARE_ADJUSTMENTS,
+    PricingDemandLevel,
+    PricingRideType,
+    SHARE_AUTO_FARE_SETTINGS,
+    SURGE_SETTINGS,
+    VEHICLE_DISTANCE_SLABS,
+    VEHICLE_FARE_SETTINGS,
 } from '../../lib/fare-settings';
 
 /* ================= FIREBASE CONFIG ================= */
@@ -53,7 +53,10 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 const storage = getStorage(app);
 const SCREEN_HEIGHT = Dimensions.get('window').height;
+const SCREEN_WIDTH = Dimensions.get('window').width;
 const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
+const ACTIVE_RIDE_BUTTON_WIDTH = 140;
+const ACTIVE_RIDE_BUTTON_HEIGHT = 48;
 const EARN_REWARD_AMOUNT = 5;
 
 type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
@@ -685,10 +688,18 @@ function RideAppScreen() {
   const [profileNameEdit, setProfileNameEdit] = useState('');
   const [isSavingProfileName, setIsSavingProfileName] = useState(false);
   const [showRideStartedGameModal, setShowRideStartedGameModal] = useState(false);
+  const [showRideHomeButton, setShowRideHomeButton] = useState(false);
+  const activeRideButtonPos = useRef(new Animated.ValueXY({ x: SCREEN_WIDTH - ACTIVE_RIDE_BUTTON_WIDTH - 18, y: SCREEN_HEIGHT - 220 })).current;
+  const activeRideButtonScale = useRef(new Animated.Value(1)).current;
+  const activeRideButtonLastPos = useRef({ x: SCREEN_WIDTH - ACTIVE_RIDE_BUTTON_WIDTH - 18, y: SCREEN_HEIGHT - 220 });
   const [rideGameProgress, setRideGameProgress] = useState(0);
   const [rideGameSpeed, setRideGameSpeed] = useState(0);
   const [rideGameSteer, setRideGameSteer] = useState(0);
   const [rideGameSparkle, setRideGameSparkle] = useState(0);
+  const [rideGameLives, setRideGameLives] = useState(3);
+  const [rideGameStatus, setRideGameStatus] = useState<'running' | 'crashed' | 'finished' | 'gameover'>('running');
+  const [rideGameObstacles, setRideGameObstacles] = useState<{ id: string; x: number; y: number }[]>([]);
+  const rideGameObstacleTimerRef = useRef(0);
   const startedRideShownRef = useRef('');
   
   // NEW STATES FOR RATINGS, EARNINGS & BEHAVIOR REPORTING
@@ -976,31 +987,151 @@ function RideAppScreen() {
       setRideGameSpeed(0);
       setRideGameSteer(0);
       setRideGameSparkle(0);
+      setRideGameLives(3);
+      setRideGameStatus('running');
+      setRideGameObstacles([]);
+      rideGameObstacleTimerRef.current = 0;
       setShowRideStartedGameModal(true);
+      setShowRideHomeButton(false);
       return;
     }
 
     if (!userBookedRide?.id) {
       startedRideShownRef.current = '';
       setShowRideStartedGameModal(false);
+      setShowRideHomeButton(false);
       setRideGameProgress(0);
       setRideGameSpeed(0);
       setRideGameSteer(0);
       setRideGameSparkle(0);
+      setRideGameLives(3);
+      setRideGameStatus('running');
+      setRideGameObstacles([]);
+      rideGameObstacleTimerRef.current = 0;
     }
   }, [mode, userBookedRide?.id, userBookedRide?.status]);
 
   useEffect(() => {
-    if (!showRideStartedGameModal) return;
+    if (
+      mode !== 'USER' ||
+      !userBookedRide ||
+      userBookedRide.status !== 'started' ||
+      userBookedRide.passengerId !== currentUserId
+    ) {
+      setShowRideHomeButton(false);
+    }
+  }, [mode, userBookedRide?.id, userBookedRide?.status, userBookedRide?.passengerId, currentUserId]);
 
+  const activeRideButtonPanResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4,
+    onPanResponderGrant: () => {
+      activeRideButtonPos.stopAnimation((val) => {
+        activeRideButtonLastPos.current = { x: val.x, y: val.y };
+      });
+    },
+    onPanResponderMove: (_, gestureState) => {
+      activeRideButtonPos.setValue({
+        x: activeRideButtonLastPos.current.x + gestureState.dx,
+        y: activeRideButtonLastPos.current.y + gestureState.dy,
+      });
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      const nextX = Math.min(Math.max(activeRideButtonLastPos.current.x + gestureState.dx, 12), SCREEN_WIDTH - ACTIVE_RIDE_BUTTON_WIDTH - 12);
+      const nextY = Math.min(Math.max(activeRideButtonLastPos.current.y + gestureState.dy, 80), SCREEN_HEIGHT - ACTIVE_RIDE_BUTTON_HEIGHT - 26);
+      activeRideButtonLastPos.current = { x: nextX, y: nextY };
+      Animated.spring(activeRideButtonPos, {
+        toValue: { x: nextX, y: nextY },
+        useNativeDriver: false,
+        friction: 8,
+      }).start();
+    },
+  }), [activeRideButtonPos]);
+
+  useEffect(() => {
+    if (userBookedRide?.status === 'started') {
+      activeRideButtonScale.setValue(1);
+      const pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(activeRideButtonScale, {
+            toValue: 1.08,
+            duration: 550,
+            easing: undefined,
+            useNativeDriver: false,
+          }),
+          Animated.timing(activeRideButtonScale, {
+            toValue: 1,
+            duration: 550,
+            easing: undefined,
+            useNativeDriver: false,
+          }),
+        ]),
+      );
+      pulseLoop.start();
+      return () => pulseLoop.stop();
+    }
+    activeRideButtonScale.setValue(1);
+    return undefined;
+  }, [userBookedRide?.status, activeRideButtonScale]);
+
+  useEffect(() => {
+    if (!showRideStartedGameModal || rideGameStatus !== 'running') return;
+
+    const lanes = [12, 30, 48, 66, 84];
     const tick = setInterval(() => {
-      setRideGameSpeed((prev) => Math.max(0, prev - 0.2));
-      setRideGameProgress((prev) => Math.min(100, prev + Math.max(0.1, rideGameSpeed * 0.18)));
+      setRideGameSpeed((prev) => Math.max(0, prev - 0.22));
+      setRideGameProgress((prev) => Math.min(100, prev + Math.max(0.2, rideGameSpeed * 0.22 + 0.1)));
       setRideGameSparkle((prev) => (prev + 1) % 4);
+      setRideGameObstacles((prev) => {
+        const obstacleSpeed = 3 + rideGameSpeed * 1.2 + rideGameProgress * 0.05;
+        const next = prev
+          .map((obs) => ({ ...obs, y: obs.y + obstacleSpeed }))
+          .filter((obs) => obs.y <= 118);
+
+        rideGameObstacleTimerRef.current += 120;
+        const spawnInterval = 820 - Math.min(400, rideGameProgress * 2.5);
+        if (rideGameObstacleTimerRef.current >= spawnInterval) {
+          rideGameObstacleTimerRef.current = 0;
+          next.push({
+            id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            x: lanes[Math.floor(Math.random() * lanes.length)],
+            y: -20,
+          });
+        }
+
+        return next;
+      });
     }, 120);
 
     return () => clearInterval(tick);
-  }, [showRideStartedGameModal, rideGameSpeed]);
+  }, [showRideStartedGameModal, rideGameSpeed, rideGameStatus, rideGameProgress]);
+
+  useEffect(() => {
+    if (!showRideStartedGameModal || rideGameStatus !== 'running') return;
+    const currentX = Math.min(82, Math.max(8, 50 + rideGameSteer));
+    const obstacleHalfWidth = 10;
+    const autoHalfWidth = 11;
+    const crash = rideGameObstacles.some((obs) => {
+      const verticalHit = obs.y >= 90 && obs.y <= 112;
+      const horizontalHit = Math.abs(obs.x - currentX) <= obstacleHalfWidth + autoHalfWidth;
+      return verticalHit && horizontalHit;
+    });
+
+    if (crash) {
+      setRideGameLives((prev) => {
+        const next = Math.max(0, prev - 1);
+        setRideGameStatus(next <= 0 ? 'gameover' : 'crashed');
+        return next;
+      });
+      setRideGameSpeed(0);
+      setRideGameObstacles((prev) => prev.filter((obs) => obs.y < 90 || obs.y > 112));
+    }
+  }, [rideGameObstacles, rideGameSteer, rideGameStatus, showRideStartedGameModal, rideGameLives]);
+
+  useEffect(() => {
+    if (rideGameProgress >= 100 && rideGameStatus === 'running') {
+      setRideGameStatus('finished');
+    }
+  }, [rideGameProgress, rideGameStatus]);
 
   useEffect(() => {
     if (!(mode === 'USER' && isPassengerCardExpanded && !userBookedRide)) {
@@ -4097,7 +4228,7 @@ function RideAppScreen() {
   return (
     <View style={styles.container}>
       {mode === 'USER' ? (
-          !userBookedRide ? (
+          (!userBookedRide || showRideHomeButton) ? (
             <MapView 
               ref={mapRef}
               style={styles.map}
@@ -4318,6 +4449,29 @@ function RideAppScreen() {
           <Text style={styles.currentLocFabText}>⌖</Text>
         </Pressable>
       )}
+      {mode === 'USER' && showRideHomeButton && userBookedRide?.status === 'started' && userBookedRide?.passengerId === currentUserId && (
+        <Animated.View
+          style={[
+            styles.activeRideButton,
+            {
+              top: activeRideButtonPos.y,
+              left: activeRideButtonPos.x,
+              transform: [{ scale: activeRideButtonScale }],
+            },
+          ]}
+          {...activeRideButtonPanResponder.panHandlers}
+        >
+          <Pressable
+            style={styles.activeRideButtonPressable}
+            onPress={() => {
+              setShowRideStartedGameModal(true);
+              setShowRideHomeButton(false);
+            }}
+          >
+            <Text style={styles.activeRideButtonText}>Active Ride</Text>
+          </Pressable>
+        </Animated.View>
+      )}
 
       {/* HEADER */}
       {!(mode === 'USER' && !userBookedRide && isPassengerCardExpanded) && (
@@ -4390,7 +4544,7 @@ function RideAppScreen() {
       >
         {mode === 'USER' ? (
           <>
-            {!userBookedRide ? (
+            {(!userBookedRide || showRideHomeButton) ? (
               <>
                 <View style={styles.passengerCardHandleWrap}>
                   <View style={styles.passengerCardHandle} />
@@ -4697,7 +4851,10 @@ function RideAppScreen() {
                   <View style={[styles.driverArrivingCard, { backgroundColor: '#ECFDF3', borderColor: '#7DD3A5', borderWidth: 1 }]}> 
                     <Text style={[styles.searchingText, {color: '#15803D'}]}>🎉 Congratulations! Your ride has started.</Text>
                     <Text style={{ color: '#166534', textAlign: 'center', marginTop: 4 }}>Open the creative ride screen and play until destination.</Text>
-                    <Pressable style={[styles.navButton, { marginTop: 10 }]} onPress={() => setShowRideStartedGameModal(true)}>
+                    <Pressable style={[styles.navButton, { marginTop: 10 }]} onPress={() => {
+                        setShowRideStartedGameModal(true);
+                        setShowRideHomeButton(false);
+                    }}>
                         <Text style={styles.navButtonText}>Open Ride Experience</Text>
                     </Pressable>
                   </View>
@@ -5318,14 +5475,23 @@ function RideAppScreen() {
         </View>
       </Modal>
 
-      <Modal visible={showRideStartedGameModal} animationType="slide" onRequestClose={() => setShowRideStartedGameModal(false)}>
+      <Modal visible={showRideStartedGameModal} animationType="slide" onRequestClose={() => {
+          setShowRideStartedGameModal(false);
+          setShowRideHomeButton(true);
+        }}>
         <View style={styles.rideGameWrap}>
           <View style={styles.rideGameHeader}>
-            <Pressable onPress={() => setShowRideStartedGameModal(false)}>
+            <Pressable onPress={() => {
+              setShowRideStartedGameModal(false);
+              setShowRideHomeButton(true);
+            }}>
               <Text style={styles.rideGameHeaderBtn}>Back</Text>
             </Pressable>
             <Text style={styles.rideGameTitle}>Ride Started</Text>
-            <Pressable onPress={() => setShowRideStartedGameModal(false)}>
+            <Pressable onPress={() => {
+              setShowRideStartedGameModal(false);
+              setShowRideHomeButton(true);
+            }}>
               <Text style={styles.rideGameHeaderBtn}>Main Screen</Text>
             </Pressable>
           </View>
@@ -5343,28 +5509,92 @@ function RideAppScreen() {
             </View>
             <Text style={styles.rideTrackMeta}>{Math.round(rideGameProgress)}% route simulated</Text>
 
+            <Text style={styles.rideLivesText}>Lives: {rideGameLives} • {rideGameStatus === 'running' ? 'Dodge the obstacles!' : rideGameStatus === 'crashed' ? 'You crashed!' : 'Route complete!'}</Text>
+            <Text style={styles.rideGameHint}>Use steering buttons to avoid cones and barriers. Stay in the lane and keep the ride moving.</Text>
             <View style={styles.rideRoadArea}>
               <View style={styles.rideRoadStripe} />
+              {rideGameObstacles.map((obs) => (
+                <View key={obs.id} style={[styles.rideObstacle, { left: `${obs.x}%`, top: `${obs.y}%` }]}> 
+                  <Text style={styles.rideObstacleText}>🚧</Text>
+                </View>
+              ))}
               <Text style={[styles.rideAutoIcon, { left: `${Math.min(82, Math.max(8, 50 + rideGameSteer))}%` }]}>🛺</Text>
             </View>
 
+            {rideGameStatus === 'crashed' && (
+              <Text style={styles.rideCrashText}>Crash detected! Tap Retry and steer away from the next obstacle.</Text>
+            )}
+            {rideGameStatus === 'finished' && (
+              <Text style={styles.rideFinishedText}>Nice! You finished the route safely.</Text>
+            )}
+            {rideGameStatus === 'gameover' && (
+              <Text style={styles.rideCrashText}>Game over! You have no lives left.</Text>
+            )}
+
             <View style={styles.rideControlRow}>
-              <Pressable style={styles.rideControlBtn} onPress={() => setRideGameSteer((prev) => Math.max(-35, prev - 10))}>
-                <Text style={styles.rideControlText}>◀ Steering</Text>
+              <Pressable
+                style={[styles.rideControlBtn, rideGameStatus !== 'running' && styles.disabledControlBtn]}
+                onPress={() => rideGameStatus === 'running' && setRideGameSteer((prev) => Math.max(-35, prev - 10))}
+              >
+                <Text style={styles.rideControlText}>◀ Move Left</Text>
               </Pressable>
-              <Pressable style={styles.rideControlBtn} onPress={() => setRideGameSteer((prev) => Math.min(35, prev + 10))}>
-                <Text style={styles.rideControlText}>Steering ▶</Text>
+              <Pressable
+                style={[styles.rideControlBtn, rideGameStatus !== 'running' && styles.disabledControlBtn]}
+                onPress={() => rideGameStatus === 'running' && setRideGameSteer((prev) => Math.min(35, prev + 10))}
+              >
+                <Text style={styles.rideControlText}>Move Right ▶</Text>
               </Pressable>
             </View>
 
             <View style={styles.rideControlRow}>
-              <Pressable style={[styles.rideControlBtn, { backgroundColor: '#15803D' }]} onPress={() => setRideGameSpeed((prev) => Math.min(12, prev + 1.8))}>
-                <Text style={styles.rideControlText}>Accelerator</Text>
+              <Pressable
+                style={[styles.rideControlBtn, { backgroundColor: '#15803D' }, rideGameStatus !== 'running' && styles.disabledControlBtn]}
+                onPress={() => rideGameStatus === 'running' && setRideGameSpeed((prev) => Math.min(12, prev + 1.8))}
+              >
+                <Text style={styles.rideControlText}>Accelerate</Text>
               </Pressable>
-              <Pressable style={[styles.rideControlBtn, { backgroundColor: '#B91C1C' }]} onPress={() => setRideGameSpeed((prev) => Math.max(0, prev - 2.2))}>
+              <Pressable
+                style={[styles.rideControlBtn, { backgroundColor: '#B91C1C' }, rideGameStatus !== 'running' && styles.disabledControlBtn]}
+                onPress={() => rideGameStatus === 'running' && setRideGameSpeed((prev) => Math.max(0, prev - 2.2))}
+              >
                 <Text style={styles.rideControlText}>Brake</Text>
               </Pressable>
             </View>
+
+            {(rideGameStatus === 'crashed' || rideGameStatus === 'gameover') && (
+              <Pressable
+                style={[styles.primaryButton, { marginTop: 8 }]}
+                onPress={() => {
+                  setRideGameProgress(0);
+                  setRideGameSpeed(0);
+                  setRideGameSteer(0);
+                  setRideGameSparkle(0);
+                  setRideGameLives(3);
+                  setRideGameStatus('running');
+                  setRideGameObstacles([]);
+                  rideGameObstacleTimerRef.current = 0;
+                }}
+              >
+                <Text style={styles.buttonText}>{rideGameStatus === 'gameover' ? 'Restart Game' : 'Retry Game'}</Text>
+              </Pressable>
+            )}
+            {rideGameStatus === 'finished' && (
+              <Pressable
+                style={[styles.primaryButton, { marginTop: 8 }]}
+                onPress={() => {
+                  setRideGameProgress(0);
+                  setRideGameSpeed(0);
+                  setRideGameSteer(0);
+                  setRideGameSparkle(0);
+                  setRideGameLives(3);
+                  setRideGameStatus('running');
+                  setRideGameObstacles([]);
+                  rideGameObstacleTimerRef.current = 0;
+                }}
+              >
+                <Text style={styles.buttonText}>Play Again</Text>
+              </Pressable>
+            )}
           </View>
 
           <View style={styles.rideGameBottomActions}>
@@ -5374,7 +5604,10 @@ function RideAppScreen() {
                 <Text style={styles.buttonText}>Cancel Ride</Text>
               </Pressable>
             )}
-            <Pressable style={[styles.primaryButton, { marginTop: 8 }]} onPress={() => setShowRideStartedGameModal(false)}>
+            <Pressable style={[styles.primaryButton, { marginTop: 8 }]} onPress={() => {
+              setShowRideStartedGameModal(false);
+              setShowRideHomeButton(true);
+            }}>
               <Text style={styles.buttonText}>Back to Main Screen</Text>
             </Pressable>
           </View>
@@ -6078,6 +6311,9 @@ const styles = StyleSheet.create({
   header: { position: 'absolute', top: 50, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10 },
   currentLocFab: { position: 'absolute', right: 18, bottom: 235 + CURRENT_LOC_FAB_RISE, width: 24, height: 24, borderRadius: 12, backgroundColor: '#007AFF', alignItems: 'center', justifyContent: 'center', elevation: 8, shadowColor: '#111827', shadowOpacity: 0.2, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, zIndex: 12, borderWidth: 1, borderColor: '#005FCC' },
   currentLocFabText: { fontSize: 12, color: '#FFFFFF', fontWeight: '900' },
+  activeRideButton: { position: 'absolute', width: ACTIVE_RIDE_BUTTON_WIDTH, height: ACTIVE_RIDE_BUTTON_HEIGHT, backgroundColor: '#0E7490', borderRadius: 26, elevation: 12, shadowColor: '#0F172A', shadowOpacity: 0.28, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, zIndex: 12, alignItems: 'center', justifyContent: 'center' },
+  activeRideButtonPressable: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center' },
+  activeRideButtonText: { color: '#FFFFFF', fontWeight: '800', letterSpacing: 0.2 },
   badge: { backgroundColor: 'white', padding: 12, borderRadius: 25, elevation: 5 },
   logout: { backgroundColor: '#FF3B30', width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   bottomCard: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: 'white', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20, maxHeight: '100%' },
@@ -6352,7 +6588,14 @@ const styles = StyleSheet.create({
   rideAutoIcon: { position: 'absolute', bottom: 10, marginLeft: -16, fontSize: 34 },
   rideControlRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
   rideControlBtn: { flex: 1, backgroundColor: '#1E3A8A', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  disabledControlBtn: { opacity: 0.35 },
   rideControlText: { color: '#FFFFFF', fontWeight: '800' },
+  rideLivesText: { color: '#0F172A', fontWeight: '800', marginTop: 10 },
+  rideGameHint: { color: '#334155', marginTop: 6, fontSize: 13 },
+  rideObstacle: { position: 'absolute', width: 28, height: 28, borderRadius: 8, backgroundColor: '#EF4444', justifyContent: 'center', alignItems: 'center' },
+  rideObstacleText: { fontSize: 16 },
+  rideCrashText: { color: '#B91C1C', fontWeight: '800', marginTop: 10, textAlign: 'center' },
+  rideFinishedText: { color: '#15803D', fontWeight: '800', marginTop: 10, textAlign: 'center' },
   rideGameBottomActions: { marginTop: 12, marginHorizontal: 14, paddingBottom: 20 },
   // EARNINGS PAGE STYLES
   earningsCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },

@@ -55,7 +55,7 @@ function DummyScreen({ title }: any) {
 export default function App() {
   return (
     <NavigationContainer>
-      <Tab.Navigator screenOptions={{ headerShown: false }}>
+      <Tab.Navigator screenOptions={{ headerShown: false, tabBarStyle: { display: 'none' } }}>
 
         <Tab.Screen name="Ride" component={HomeScreen} />
 
