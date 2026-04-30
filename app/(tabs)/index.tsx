@@ -5,36 +5,36 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-    createUserWithEmailAndPassword,
-    getAuth, onAuthStateChanged, signInWithEmailAndPassword,
-    signOut
+  createUserWithEmailAndPassword,
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+  signOut
 } from 'firebase/auth';
 import {
-    addDoc, arrayUnion, collection,
-    deleteDoc,
-    deleteField,
-    doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
+  addDoc, arrayUnion, collection,
+  deleteDoc,
+  deleteField,
+  doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Alert,
-    Animated,
-    Dimensions,
-    FlatList,
-    Image,
-    Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
-    StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
+  Alert,
+  Animated,
+  Dimensions,
+  FlatList,
+  Image,
+  Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
+  StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import {
-    FARE_ADJUSTMENTS,
-    PricingDemandLevel,
-    PricingRideType,
-    SHARE_AUTO_FARE_SETTINGS,
-    SURGE_SETTINGS,
-    VEHICLE_DISTANCE_SLABS,
-    VEHICLE_FARE_SETTINGS,
+  FARE_ADJUSTMENTS,
+  PricingDemandLevel,
+  PricingRideType,
+  SHARE_AUTO_FARE_SETTINGS,
+  SURGE_SETTINGS,
+  VEHICLE_DISTANCE_SLABS,
+  VEHICLE_FARE_SETTINGS,
 } from '../../lib/fare-settings';
 
 /* ================= FIREBASE CONFIG ================= */
@@ -1951,7 +1951,7 @@ function RideAppScreen() {
 
   const getDynamicBikeFare = (distanceKm: number) => {
     const demandLevel = getDemandLevel();
-    const tableFare = distanceKm <= 11 ? getBikeFareFromTable(distanceKm, demandLevel) : null;
+    const tableFare = getBikeFareFromTable(distanceKm, demandLevel);
     if (tableFare !== null) return tableFare;
 
     const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.bike) * 60);
