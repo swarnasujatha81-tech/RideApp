@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { decode, encode } from 'base-64';
 import { Audio } from 'expo-av';
+import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-  createUserWithEmailAndPassword,
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+  getAuth, onAuthStateChanged,
+  PhoneAuthProvider, signInWithCredential,
   signOut
 } from 'firebase/auth';
 import {
@@ -593,6 +594,55 @@ function RideAppScreen() {
   const [driverVehicle, setDriverVehicle] = useState<DriverVehicleType | null>(null);
   const [fares, setFares] = useState({ Bike: 0, Auto: 0, Cab: 0, ShareAuto: 0, Parcel: 0 });
   const [otpInput, setOtpInput] = useState('');
+  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [verificationSent, setVerificationSent] = useState(false);
+  const recaptchaVerifier = useRef<any | null>(null);
+
+  const handleSendOtp = async () => {
+    if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
+      Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number starting with 6,7,8 or 9.');
+      return;
+    }
+    try {
+      const phoneProvider = new PhoneAuthProvider(auth);
+      const id = await phoneProvider.verifyPhoneNumber('+91' + mobileNumber, recaptchaVerifier.current);
+      setVerificationId(id);
+      setVerificationSent(true);
+      Alert.alert('OTP sent', 'Please check your SMS for the OTP.');
+    } catch (err: any) {
+      const msg = err?.message || 'Could not send OTP. Please try again.';
+      Alert.alert('OTP failed', msg);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    try {
+      if (!verificationId) {
+        Alert.alert('No OTP requested', 'Please request an OTP first.');
+        return;
+      }
+      const cred = PhoneAuthProvider.credential(verificationId, otpInput);
+      const userCred = await signInWithCredential(auth, cred);
+      const user = userCred.user;
+      if (user) {
+        try {
+          const userRef = doc(db, 'users', user.uid);
+          const userSnap = await getDoc(userRef);
+          if (!userSnap.exists()) {
+            await setDoc(userRef, {
+              phone: mobileNumber,
+              createdAt: Timestamp.now()
+            });
+          }
+        } catch {
+          // ignore Firestore write failures here
+        }
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'OTP verification failed. Please try again.';
+      Alert.alert('Verification failed', msg);
+    }
+  };
   const lastFareRebalancePromptRef = useRef<number | null>(null);
   const lastDriverFareRebalancePromptRef = useRef<number | null>(null);
   const [showDetails, setShowDetails] = useState(false);
@@ -1364,7 +1414,7 @@ function RideAppScreen() {
     return usedToday < DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT;
   };
 
-  const isValidMobile = (val: string) => /^[6-9]\d{9}$/.test(val);
+  const isValidMobileFn = (val: string) => /^[6-9]\d{9}$/.test(val);
   const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
   const isValidVehiclePlate = (val: string) => /^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$/.test(val.toUpperCase());
 
@@ -3421,7 +3471,7 @@ function RideAppScreen() {
       Alert.alert('Required', 'Please enter passenger name.');
       return;
     }
-    if (!isValidMobile(passengerPhone)) {
+    if (!isValidMobileFn(passengerPhone)) {
       Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number for passenger.');
       return;
     }
@@ -4177,50 +4227,27 @@ function RideAppScreen() {
     setSelectedSharePassengerId('');
   };
 
-  const handleAuth = async () => {
-    try {
-      if (!isSignup) {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
-        return;
-      }
-
-      if (!fullName.trim()) {
-        Alert.alert('Required', 'Please enter your full name.');
-        return;
-      }
-      if (!isValidMobile(mobileNumber)) {
-        Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
-        return;
-      }
-
-      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      await setDoc(doc(db, 'users', cred.user.uid), {
-        name: fullName.trim(),
-        phone: mobileNumber,
-        email: email.trim(),
-        earnWallet: 0,
-        createdAt: Timestamp.now()
-      });
-      setProfileName(fullName.trim());
-      setProfilePhone(mobileNumber);
-    } catch (error: any) {
-      const message = error?.message || 'Could not complete authentication. Please try again.';
-      Alert.alert('Authentication failed', message);
-    }
-  };
+  // Email/password auth removed — phone-only OTP flow handled by Send/Verify OTP handlers.
 
   if (!loggedIn) {
     return (
       <View style={styles.loginContainer}>
-        <Text style={styles.title}>{isSignup ? 'Join Share It' : 'Welcome'}</Text>
-        {isSignup && <TextInput style={styles.input} placeholder="Full Name" value={fullName} onChangeText={setFullName} />}
-        {isSignup && <TextInput style={styles.input} placeholder="10-digit Mobile Number" value={mobileNumber} onChangeText={(v) => setMobileNumber(v.replace(/\D/g, '').slice(0, 10))} keyboardType="phone-pad" maxLength={10} />}
-        <TextInput style={styles.input} placeholder="Email" value={email} onChangeText={setEmail} autoCapitalize="none" />
-        <TextInput style={styles.input} placeholder="Password" value={password} onChangeText={setPassword} secureTextEntry />
-        <Pressable style={styles.primaryButton} onPress={handleAuth}>
-          <Text style={styles.buttonText}>{isSignup ? 'Sign Up' : 'Login'}</Text>
-        </Pressable>
-        <Pressable onPress={() => setIsSignup(!isSignup)}><Text style={styles.switchAuth}>Switch to {isSignup ? 'Login' : 'Signup'}</Text></Pressable>
+        <Text style={styles.title}>Welcome</Text>
+        <Text style={{ marginTop: 12, color: '#666' }}>Sign in / Sign up with mobile (OTP)</Text>
+        <TextInput style={styles.input} placeholder="10-digit Mobile Number" value={mobileNumber} onChangeText={(v) => setMobileNumber(v.replace(/\D/g, '').slice(0, 10))} keyboardType="phone-pad" maxLength={10} />
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={handleSendOtp}>
+            <Text style={styles.buttonText}>Send OTP</Text>
+          </Pressable>
+          <Pressable style={[styles.primaryButton, { flex: 1, backgroundColor: verificationSent ? '#2563EB' : '#94A3B8' }]} onPress={handleVerifyOtp} disabled={!verificationSent}>
+            <Text style={styles.buttonText}>Verify OTP</Text>
+          </Pressable>
+        </View>
+        <TextInput style={[styles.input, { marginTop: 8 }]} placeholder="Enter OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
+
+        <Text style={{ marginTop: 8, color: '#777', fontSize: 12 }}>If Recaptcha modal is not available, install expo-firebase-recaptcha.</Text>
+        <View nativeID="recaptcha-container" style={{ width: 0, height: 0 }} />
+        <FirebaseRecaptchaVerifierModal ref={recaptchaVerifier} firebaseConfig={firebaseConfig} />
       </View>
     );
   }
@@ -4938,7 +4965,7 @@ function RideAppScreen() {
                           Alert.alert('Required', 'Fill all details.');
                           return;
                         }
-                        if (!isValidMobile(driverPhone)) {
+                        if (!isValidMobileFn(driverPhone)) {
                           Alert.alert('Invalid mobile', 'Enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9.');
                           return;
                         }
