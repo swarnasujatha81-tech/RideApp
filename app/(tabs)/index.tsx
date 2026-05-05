@@ -5084,6 +5084,9 @@ function RideAppScreen() {
                         <View style={styles.verificationModal}>
                           {waitingForVerification ? (
                             <View style={styles.pendingWrap}>
+                              <Pressable style={styles.pendingBack} onPress={() => { setShowDriverVerification(false); setMode('USER'); }}>
+                                <Text style={styles.pendingBackText}>← Back to passenger</Text>
+                              </Pressable>
                               <Text style={styles.pendingBadge}>Submitted</Text>
                               <Text style={styles.pendingTitle}>Your request is pending for approval</Text>
                               <Text style={styles.pendingText}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
@@ -5102,6 +5105,10 @@ function RideAppScreen() {
                                 setWaitingForVerification(true);
                                 setDriverDocId(id);
                               }}
+                              onBack={() => {
+                                setShowDriverVerification(false);
+                                setMode('USER');
+                              }}
                             />
                           )}
                         </View>
@@ -5109,7 +5116,7 @@ function RideAppScreen() {
                     )}
                     
                     <View style={{marginVertical: 12, alignItems: 'center'}}>
-                      <Text style={{fontSize: 12, color: '#666', marginBottom: 8}}>Driver Photo (Optional)</Text>
+                      <Text style={{fontSize: 12, color: '#666', marginBottom: 8}}>Driver Photo (Required)</Text>
                       {driverPhotoUri ? (
                         <View style={{width: 100, height: 100, borderRadius: 50, marginBottom: 10, overflow: 'hidden', borderWidth: 2, borderColor: '#007AFF'}}>
                           <Image source={{ uri: driverPhotoUri }} style={{width: '100%', height: '100%'}} />
@@ -5119,8 +5126,8 @@ function RideAppScreen() {
                           <Text style={{fontSize: 40}}>📷</Text>
                         </View>
                       )}
-                      <Pressable style={[styles.primaryButton, {marginBottom: 10, backgroundColor: '#34C759'}]} onPress={pickDriverPhoto}>
-                        <Text style={styles.buttonText}>{driverPhotoUrl ? '✓ Photo Uploaded' : 'Upload Photo'}</Text>
+                      <Pressable style={[styles.primaryButton, {marginBottom: 10, backgroundColor: '#0B61FF'}]} onPress={pickDriverPhoto}>
+                        <Text style={[styles.buttonText, {color:'#FFFFFF'}]}>{driverPhotoUrl ? '✓ Photo Uploaded' : 'Upload Photo *'}</Text>
                       </Pressable>
                     </View>
                     
@@ -5137,6 +5144,10 @@ function RideAppScreen() {
                         }
                         if (!isValidVehiclePlate(vehiclePlate)) {
                           Alert.alert('Invalid vehicle plate', 'Enter a valid Indian vehicle number plate (e.g., MH12AB1234).');
+                          return;
+                        }
+                        if (!driverPhotoUri && !driverPhotoUrl) {
+                          Alert.alert('Photo required', 'Please upload a profile photo before proceeding.');
                           return;
                         }
                         setShowDriverVerification(true);
@@ -6477,16 +6488,16 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFF' },
   loginScreen: { flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 0 },
-  loginHero: { backgroundColor: '#111827', paddingTop: 56, paddingBottom: 32, paddingHorizontal: 24, alignItems: 'center' },
+  loginHero: { backgroundColor: '#0B61FF', paddingTop: 56, paddingBottom: 32, paddingHorizontal: 24, alignItems: 'center' },
   loginBrandName: { fontSize: 42, fontWeight: '900', color: '#FFFFFF', marginBottom: 8 },
-  loginBrandTagline: { fontSize: 16, fontWeight: '700', color: '#E5E7EB' },
+  loginBrandTagline: { fontSize: 16, fontWeight: '700', color: '#E6F0FF' },
   loginForm: { paddingHorizontal: 24, paddingTop: 32, paddingBottom: 24 },
-  loginFormTitle: { fontSize: 26, fontWeight: '900', color: '#111827', marginBottom: 6 },
-  loginFormSubtitle: { fontSize: 14, color: '#6B7280', marginBottom: 24, lineHeight: 20 },
+  loginFormTitle: { fontSize: 26, fontWeight: '900', color: '#0B61FF', marginBottom: 6 },
+  loginFormSubtitle: { fontSize: 14, color: '#475569', marginBottom: 24, lineHeight: 20 },
   loginInputWrap: { marginBottom: 18 },
   loginLabel: { fontSize: 12, fontWeight: '700', color: '#111827', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 },
   loginInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#111827' },
-  loginPrimaryButton: { backgroundColor: '#111827', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8, marginBottom: 12 },
+  loginPrimaryButton: { backgroundColor: '#0B61FF', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8, marginBottom: 12 },
   loginPrimaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
 
   validationModalWrap: { flex: 1, backgroundColor: 'rgba(6,8,23,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
@@ -6495,8 +6506,8 @@ const styles = StyleSheet.create({
   validationModalMessage: { color: '#374151', fontSize: 14, textAlign: 'center', marginBottom: 18 },
   validationModalButton: { backgroundColor: '#0F172A', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 12 },
   validationModalButtonText: { color: '#FFFFFF', fontWeight: '800' },
-  loginSecondaryButton: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  loginSecondaryButtonText: { color: '#111827', fontSize: 16, fontWeight: '700' },
+  loginSecondaryButton: { borderWidth: 1, borderColor: '#0B61FF', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  loginSecondaryButtonText: { color: '#0B61FF', fontSize: 16, fontWeight: '700' },
   loginHintText: { fontSize: 13, color: '#6B7280', marginBottom: 20, marginTop: 4, lineHeight: 18 },
   loginFooter: { position: 'absolute', bottom: 32, left: 24, right: 24, textAlign: 'center', fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
   map: { flex: 1 },
@@ -6556,6 +6567,8 @@ const styles = StyleSheet.create({
   pendingCard: { backgroundColor: '#121A33', borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   pendingCardTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginBottom: 6 },
   pendingCardText: { color: '#C7D1ED', fontSize: 14, lineHeight: 20 },
+  pendingBack: { position: 'absolute', top: 18, left: 18, padding: 8 },
+  pendingBackText: { color: '#FFFFFF', fontWeight: '700' },
   currentLocationHintText: { marginTop: 6, fontSize: 11, color: '#6B7280', textAlign: 'center' },
   searchSuggestionPanel: { backgroundColor: '#F8FAFA', borderColor: '#E2E8F0', borderWidth: 1, borderRadius: 16, padding: 8, marginBottom: 10, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   searchSuggestionItem: { paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, backgroundColor: '#FFFFFF', marginBottom: 8, borderWidth: 1, borderColor: '#E5E7EB' },

@@ -84,16 +84,19 @@ export default function DriverVerificationButtons({
   phone,
   vehicleNumber,
   onSubmitted,
+  onBack,
 }: {
   name: string;
   phone: string;
   vehicleNumber: string;
   onSubmitted?: (driverId: string) => void;
+  onBack?: () => void;
 }) {
   const [rcUri, setRcUri] = useState<string | null>(null);
   const [licenseUri, setLicenseUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  const [showBack, setShowBack] = useState(true);
   useEffect(() => {
     // Request permission at mount so pick functions work smoothly
     (async () => {
@@ -161,6 +164,16 @@ export default function DriverVerificationButtons({
   return (
     <View style={styles.screen}>
       <View style={styles.hero}>
+      <View style={styles.heroHeader}>
+        {showBack ? (
+          <Pressable style={styles.backButton} onPress={() => {
+            if (onBack) onBack();
+            else setShowBack(false);
+          }}>
+            <Text style={styles.backButtonText}>← Back</Text>
+          </Pressable>
+        ) : null}
+      </View>
         <Text style={styles.kicker}>Driver verification</Text>
         <Text style={styles.heading}>Upload your documents to go live</Text>
         <Text style={styles.subheading}>
@@ -218,6 +231,9 @@ export default function DriverVerificationButtons({
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#0B1020' },
   hero: { paddingTop: 56, paddingHorizontal: 24, paddingBottom: 18 },
+  heroHeader: { paddingTop: 16, paddingHorizontal: 24, paddingBottom: 10 },
+  backButton: { padding: 8, alignSelf: 'flex-start' },
+  backButtonText: { color: '#FFFFFF', fontWeight: '700' },
   kicker: { color: '#8BA4FF', fontSize: 12, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8 },
   heading: { color: '#FFFFFF', fontSize: 30, fontWeight: '800', lineHeight: 36, marginBottom: 10 },
   subheading: { color: '#D4DAF0', fontSize: 14, lineHeight: 20 },
