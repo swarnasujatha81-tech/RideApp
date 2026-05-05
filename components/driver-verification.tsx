@@ -1,0 +1,242 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { db, storage } from '../lib/firebase';
+
+type PickType = 'rc' | 'license';
+
+// Helper: pick an image from gallery and return URI or null
+export async function pickImageAsync() {
+  const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert('Permission required', 'Permission to access gallery is required to upload documents.');
+    return null;
+  }
+
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    quality: 0.8,
+  });
+
+  if (result.canceled) return null;
+  return result.assets?.[0]?.uri ?? null;
+}
+
+// Helper: upload an image URI to Firebase Storage and return download URL
+export async function uploadImage(uri: string, storagePath: string) {
+  const response = await fetch(uri);
+  const blob = await response.blob();
+  const ref = storageRef(storage, storagePath);
+  await uploadBytes(ref, blob);
+  const url = await getDownloadURL(ref);
+  return url;
+}
+
+// Helper: save driver record to Firestore
+export async function saveDriverRecord(payload: {
+  name: string;
+  phone: string;
+  vehicleNumber: string;
+  rcImageUrl: string;
+  licenseImageUrl: string;
+}) {
+  const normalizedPhone = payload.phone.replace(/\D/g, '');
+  if (!normalizedPhone) {
+    throw new Error('Invalid phone number');
+  }
+
+  const docRef = doc(db, 'drivers', normalizedPhone);
+  const existing = await getDoc(docRef);
+  if (existing.exists()) {
+    const existingData = existing.data();
+    const error = new Error(existingData?.isVerified ? 'This number is already verified.' : 'A verification request for this number is already pending.');
+    (error as Error & { code?: string }).code = 'driver-already-submitted';
+    throw error;
+  }
+
+  await setDoc(docRef, {
+    name: payload.name,
+    phone: normalizedPhone,
+    vehicleNumber: payload.vehicleNumber,
+    rcImageUrl: payload.rcImageUrl,
+    licenseImageUrl: payload.licenseImageUrl,
+    isVerified: false,
+    createdAt: serverTimestamp(),
+  });
+  return docRef.id;
+}
+
+// Start listening to a driver document and call onVerified when isVerified becomes true
+export function startDriverVerificationListener(driverId: string, onVerified: () => void) {
+  const docRef = doc(db, 'drivers', driverId);
+  return onSnapshot(docRef, (snapshot) => {
+    const data = snapshot.data();
+    if (data && data.isVerified) onVerified();
+  });
+}
+
+// Example UI component with minimal footprint. Do NOT change your main layout—import and place where needed.
+export default function DriverVerificationButtons({
+  name,
+  phone,
+  vehicleNumber,
+  onSubmitted,
+}: {
+  name: string;
+  phone: string;
+  vehicleNumber: string;
+  onSubmitted?: (driverId: string) => void;
+}) {
+  const [rcUri, setRcUri] = useState<string | null>(null);
+  const [licenseUri, setLicenseUri] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  useEffect(() => {
+    // Request permission at mount so pick functions work smoothly
+    (async () => {
+      await ImagePicker.requestMediaLibraryPermissionsAsync();
+    })();
+  }, []);
+
+  async function pick(type: PickType) {
+    const uri = await pickImageAsync();
+    if (!uri) return;
+    if (type === 'rc') setRcUri(uri);
+    else setLicenseUri(uri);
+  }
+
+  async function handleUploadAndSave() {
+    if (uploading) return;
+    if (!rcUri || !licenseUri) {
+      Alert.alert('Missing documents', 'Please pick both RC and Driving License images before uploading.');
+      return;
+    }
+
+    // Use provided driver details
+    const exampleName = name;
+    const examplePhone = phone;
+    const exampleVehicleNumber = vehicleNumber;
+
+    try {
+      setUploading(true);
+      const timestamp = Date.now();
+      const rcPath = `drivers/${examplePhone}/rc_${timestamp}.jpg`;
+      const licensePath = `drivers/${examplePhone}/license_${timestamp}.jpg`;
+
+      const [rcUrl, licenseUrl] = await Promise.all([
+        uploadImage(rcUri, rcPath),
+        uploadImage(licenseUri, licensePath),
+      ]);
+
+      const driverId = await saveDriverRecord({
+        name: exampleName,
+        phone: examplePhone,
+        vehicleNumber: exampleVehicleNumber,
+        rcImageUrl: rcUrl,
+        licenseImageUrl: licenseUrl,
+      });
+
+      // Persist driver document id so app can listen for verification status
+      try {
+        await AsyncStorage.setItem('driver_doc_id', driverId);
+      } catch (e) {
+        console.warn('Failed to persist driver_doc_id', e);
+      }
+
+      if (onSubmitted) onSubmitted(driverId);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error && err.message
+        ? err.message
+        : 'There was a problem uploading documents.';
+      Alert.alert('Upload blocked', message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <View style={styles.screen}>
+      <View style={styles.hero}>
+        <Text style={styles.kicker}>Driver verification</Text>
+        <Text style={styles.heading}>Upload your documents to go live</Text>
+        <Text style={styles.subheading}>
+          Submit your RC and driving licence once. We verify your request manually before driver access is enabled.
+        </Text>
+      </View>
+
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.summaryCard}>
+          <Text style={styles.cardLabel}>Name</Text>
+          <Text style={styles.cardValue}>{name}</Text>
+          <Text style={[styles.cardLabel, { marginTop: 12 }]}>Phone</Text>
+          <Text style={styles.cardValue}>{phone}</Text>
+          <Text style={[styles.cardLabel, { marginTop: 12 }]}>Vehicle number</Text>
+          <Text style={styles.cardValue}>{vehicleNumber}</Text>
+        </View>
+
+        <View style={styles.uploadCard}>
+          <Text style={styles.sectionTitle}>Upload documents</Text>
+
+          <Pressable style={styles.documentButton} onPress={() => pick('rc')}>
+            <View style={styles.documentButtonTextWrap}>
+              <Text style={styles.documentButtonTitle}>{rcUri ? 'RC selected' : 'Choose RC from gallery'}</Text>
+              <Text style={styles.documentButtonSubtitle}>Vehicle registration certificate</Text>
+            </View>
+            <Text style={styles.documentAction}>{rcUri ? 'Replace' : 'Select'}</Text>
+          </Pressable>
+          {rcUri ? <Image source={{ uri: rcUri }} style={styles.preview} /> : null}
+
+          <Pressable style={[styles.documentButton, { marginTop: 14 }]} onPress={() => pick('license')}>
+            <View style={styles.documentButtonTextWrap}>
+              <Text style={styles.documentButtonTitle}>{licenseUri ? 'Licence selected' : 'Choose driving licence from gallery'}</Text>
+              <Text style={styles.documentButtonSubtitle}>Front side or clearly readable photo</Text>
+            </View>
+            <Text style={styles.documentAction}>{licenseUri ? 'Replace' : 'Select'}</Text>
+          </Pressable>
+          {licenseUri ? <Image source={{ uri: licenseUri }} style={styles.preview} /> : null}
+
+          <View style={styles.noticeBox}>
+            <Text style={styles.noticeTitle}>Important</Text>
+            <Text style={styles.noticeText}>Only one verification request is allowed per phone number.</Text>
+          </View>
+
+          <Pressable style={styles.submitButton} onPress={handleUploadAndSave} disabled={uploading}>
+            <Text style={styles.submitButtonText}>{uploading ? 'Submitting...' : 'Submit documents'}</Text>
+          </Pressable>
+
+          {uploading ? <ActivityIndicator style={styles.indicator} /> : null}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#0B1020' },
+  hero: { paddingTop: 56, paddingHorizontal: 24, paddingBottom: 18 },
+  kicker: { color: '#8BA4FF', fontSize: 12, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8 },
+  heading: { color: '#FFFFFF', fontSize: 30, fontWeight: '800', lineHeight: 36, marginBottom: 10 },
+  subheading: { color: '#D4DAF0', fontSize: 14, lineHeight: 20 },
+  content: { paddingHorizontal: 24, paddingBottom: 32 },
+  summaryCard: { backgroundColor: '#121A33', borderRadius: 24, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  cardLabel: { color: '#8FA0CF', fontSize: 12, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 },
+  cardValue: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', marginTop: 4 },
+  uploadCard: { backgroundColor: '#F7F8FC', borderRadius: 24, padding: 18 },
+  sectionTitle: { color: '#0B1020', fontSize: 18, fontWeight: '800', marginBottom: 14 },
+  documentButton: { backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 16, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#E5E8F2' },
+  documentButtonTextWrap: { flex: 1, paddingRight: 12 },
+  documentButtonTitle: { color: '#111827', fontSize: 15, fontWeight: '700' },
+  documentButtonSubtitle: { color: '#6B7280', fontSize: 12, marginTop: 4 },
+  documentAction: { color: '#355CFF', fontSize: 14, fontWeight: '800' },
+  preview: { width: '100%', height: 180, borderRadius: 18, marginTop: 10, resizeMode: 'cover', backgroundColor: '#E9EDF7' },
+  noticeBox: { marginTop: 16, backgroundColor: '#EEF3FF', borderRadius: 18, padding: 14 },
+  noticeTitle: { color: '#1831A9', fontWeight: '800', fontSize: 13, marginBottom: 4 },
+  noticeText: { color: '#35478A', fontSize: 13, lineHeight: 18 },
+  submitButton: { marginTop: 18, backgroundColor: '#111827', borderRadius: 18, paddingVertical: 16, alignItems: 'center' },
+  submitButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+  indicator: { marginTop: 12 },
+});

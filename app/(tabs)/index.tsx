@@ -6,36 +6,37 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-  getAuth, onAuthStateChanged,
-  PhoneAuthProvider, signInWithCredential,
-  signOut
+    getAuth, onAuthStateChanged,
+    PhoneAuthProvider, signInWithCredential,
+    signOut
 } from 'firebase/auth';
 import {
-  addDoc, arrayUnion, collection,
-  deleteDoc,
-  deleteField,
-  doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
+    addDoc, arrayUnion, collection,
+    deleteDoc,
+    deleteField,
+    doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Animated,
-  Dimensions,
-  FlatList,
-  Image,
-  Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
-  StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
+    Alert,
+    Animated,
+    Dimensions,
+    FlatList,
+    Image,
+    Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
+    StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
+import DriverVerificationButtons, { startDriverVerificationListener } from '../../components/driver-verification';
 import {
-  FARE_ADJUSTMENTS,
-  PricingDemandLevel,
-  PricingRideType,
-  SHARE_AUTO_FARE_SETTINGS,
-  SURGE_SETTINGS,
-  VEHICLE_DISTANCE_SLABS,
-  VEHICLE_FARE_SETTINGS,
+    FARE_ADJUSTMENTS,
+    PricingDemandLevel,
+    PricingRideType,
+    SHARE_AUTO_FARE_SETTINGS,
+    SURGE_SETTINGS,
+    VEHICLE_DISTANCE_SLABS,
+    VEHICLE_FARE_SETTINGS,
 } from '../../lib/fare-settings';
 
 /* ================= FIREBASE CONFIG ================= */
@@ -556,6 +557,10 @@ function RideAppScreen() {
   const [driverPhone, setDriverPhone] = useState('');
   const [vehiclePlate, setVehiclePlate] = useState('');
   const [isIdentitySet, setIsIdentitySet] = useState(false);
+  const [driverDocId, setDriverDocId] = useState<string | null>(null);
+  const [driverVerified, setDriverVerified] = useState(false);
+  const [showDriverVerification, setShowDriverVerification] = useState(false);
+  const [waitingForVerification, setWaitingForVerification] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [profilePhone, setProfilePhone] = useState('');
   const [profileEarnWallet, setProfileEarnWallet] = useState(0);
@@ -597,6 +602,31 @@ function RideAppScreen() {
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [verificationSent, setVerificationSent] = useState(false);
   const recaptchaVerifier = useRef<any | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const id = await AsyncStorage.getItem('driver_doc_id');
+        if (id) {
+          setDriverDocId(id);
+          setWaitingForVerification(true);
+        }
+      } catch (e) {
+        console.warn('driver_doc_id load failed', e);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!driverDocId) return;
+    const unsub = startDriverVerificationListener(driverDocId, () => {
+      setDriverVerified(true);
+      setWaitingForVerification(false);
+      setShowDriverVerification(false);
+      setIsIdentitySet(true);
+    });
+    return () => unsub();
+  }, [driverDocId]);
 
   const handleSendOtp = async () => {
     if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
@@ -3744,6 +3774,10 @@ function RideAppScreen() {
     if (pStatus === "BLOCKED_5_HOURS" || pStatus === "SUSPENDED_2_DAYS" || pStatus === "PERMANENT" || pStatus === "SUSPENDED_2_HOURS" || pStatus === "SUSPENDED_36_HOURS") {
       return Alert.alert("Access Denied", "Your account is currently restricted.");
     }
+    if (!driverVerified) {
+      Alert.alert('Awaiting approval', 'Please wait for approval before accessing driver features.');
+      return;
+    }
     if (!driverPhone || !vehiclePlate) return setIsIdentitySet(false);
     const acceptedAtMs = Date.now();
     const updatePayload: any = {
@@ -4930,17 +4964,59 @@ function RideAppScreen() {
             ) : !isIdentitySet ? (
                 <View style={{padding: 10}}>
                     <Text style={styles.sectionTitle}>Identity Setup</Text>
-                    <TextInput style={styles.input} placeholder="Full Name" value={driverName} onChangeText={setDriverName} />
-                    <TextInput
-                      style={styles.input}
-                      placeholder="10-digit Indian phone"
-                      value={driverPhone}
-                      onChangeText={(v) => setDriverPhone(v.replace(/\D/g, '').slice(0, 10))}
-                      keyboardType="phone-pad"
-                      maxLength={10}
-                    />
-                    <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={(v) => setVehiclePlate(v.toUpperCase())} autoCapitalize="characters" />
-                    <Text style={{fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10}}>Example: MH12AB1234</Text>
+                    {waitingForVerification ? (
+                      <View style={{padding: 20, alignItems: 'center'}}>
+                        <Text style={{fontSize: 20, fontWeight: '700', marginBottom: 10}}>Verification pending</Text>
+                        <Text style={{textAlign: 'center', color: '#444'}}>Your request is pending for approval.</Text>
+                        <Text style={{textAlign: 'center', color: '#444', marginTop: 6}}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
+                        <Text style={{marginTop: 12, color: '#666'}}>You will be able to access driver features once your documents are verified.</Text>
+                      </View>
+                    ) : showDriverVerification ? (
+                      <View />
+                    ) : (
+                      <>
+                        <TextInput style={styles.input} placeholder="Full Name" value={driverName} onChangeText={setDriverName} />
+                        <TextInput
+                          style={styles.input}
+                          placeholder="10-digit Indian phone"
+                          value={driverPhone}
+                          onChangeText={(v) => setDriverPhone(v.replace(/\D/g, '').slice(0, 10))}
+                          keyboardType="phone-pad"
+                          maxLength={10}
+                        />
+                        <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={(v) => setVehiclePlate(v.toUpperCase())} autoCapitalize="characters" />
+                        <Text style={{fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10}}>Example: MH12AB1234</Text>
+                      </>
+                    )}
+
+                    {(showDriverVerification || waitingForVerification) && (
+                      <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={() => {}}>
+                        <View style={styles.verificationModal}>
+                          {waitingForVerification ? (
+                            <View style={styles.pendingWrap}>
+                              <Text style={styles.pendingBadge}>Submitted</Text>
+                              <Text style={styles.pendingTitle}>Your request is pending for approval</Text>
+                              <Text style={styles.pendingText}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
+                              <View style={styles.pendingCard}>
+                                <Text style={styles.pendingCardTitle}>What happens next</Text>
+                                <Text style={styles.pendingCardText}>We review your RC and driving licence manually. Once approved, driver access is unlocked automatically.</Text>
+                              </View>
+                            </View>
+                          ) : (
+                            <DriverVerificationButtons
+                              name={driverName}
+                              phone={driverPhone}
+                              vehicleNumber={vehiclePlate}
+                              onSubmitted={(id) => {
+                                setShowDriverVerification(false);
+                                setWaitingForVerification(true);
+                                setDriverDocId(id);
+                              }}
+                            />
+                          )}
+                        </View>
+                      </Modal>
+                    )}
                     
                     <View style={{marginVertical: 12, alignItems: 'center'}}>
                       <Text style={{fontSize: 12, color: '#666', marginBottom: 8}}>Driver Photo (Optional)</Text>
@@ -4973,7 +5049,7 @@ function RideAppScreen() {
                           Alert.alert('Invalid vehicle plate', 'Enter a valid Indian vehicle number plate (e.g., MH12AB1234).');
                           return;
                         }
-                        setIsIdentitySet(true);
+                        setShowDriverVerification(true);
                       }}
                     >
                       <Text style={styles.buttonText}>Go Online</Text>
@@ -6359,6 +6435,14 @@ const styles = StyleSheet.create({
   passengerExpandedBottomBackBtnText: { color: '#FFFFFF', fontWeight: '800' },
   input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
   primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
+  verificationModal: { flex: 1, backgroundColor: '#0B1020' },
+  pendingWrap: { flex: 1, paddingHorizontal: 24, paddingTop: 72, backgroundColor: '#0B1020' },
+  pendingBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(139, 164, 255, 0.18)', color: '#B7C7FF', borderWidth: 1, borderColor: 'rgba(139, 164, 255, 0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', marginBottom: 14 },
+  pendingTitle: { color: '#FFFFFF', fontSize: 28, fontWeight: '900', lineHeight: 34, marginBottom: 12 },
+  pendingText: { color: '#D4DAF0', fontSize: 15, lineHeight: 22, marginBottom: 18 },
+  pendingCard: { backgroundColor: '#121A33', borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  pendingCardTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginBottom: 6 },
+  pendingCardText: { color: '#C7D1ED', fontSize: 14, lineHeight: 20 },
   currentLocationHintText: { marginTop: 6, fontSize: 11, color: '#6B7280', textAlign: 'center' },
   searchSuggestionPanel: { backgroundColor: '#F8FAFA', borderColor: '#E2E8F0', borderWidth: 1, borderRadius: 16, padding: 8, marginBottom: 10, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   searchSuggestionItem: { paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, backgroundColor: '#FFFFFF', marginBottom: 8, borderWidth: 1, borderColor: '#E5E7EB' },
