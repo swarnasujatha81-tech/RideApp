@@ -40,6 +40,10 @@ export async function saveDriverRecord(payload: {
   name: string;
   phone: string;
   vehicleNumber: string;
+  authUid?: string;
+  vehicleType?: string;
+  driverPhotoUrl?: string;
+  activeDeviceId?: string;
   rcImageUrl: string;
   licenseImageUrl: string;
 }) {
@@ -61,14 +65,22 @@ export async function saveDriverRecord(payload: {
 
   await setDoc(docRef, {
     name: payload.name,
+    registeredName: payload.name,
     phone: normalizedPhone,
+    registeredPhone: normalizedPhone,
+    ...(payload.authUid ? { authUid: payload.authUid, activeAuthUid: payload.authUid } : {}),
+    ...(payload.activeDeviceId ? { activeDeviceId: payload.activeDeviceId } : {}),
     vehicleNumber: payload.vehicleNumber,
+    ...(payload.vehicleType ? { vehicleType: payload.vehicleType } : {}),
+    ...(payload.driverPhotoUrl ? { driverPhotoUrl: payload.driverPhotoUrl } : {}),
     rcImageUrl: payload.rcImageUrl,
     licenseImageUrl: payload.licenseImageUrl,
     isVerified: false,
+    verificationStatus: 'pending',
     subscriptionActive: false,
-    createdAt: serverTimestamp(),
-  });
+    submittedAt: serverTimestamp(),
+    ...(existing.exists() ? {} : { createdAt: serverTimestamp() }),
+  }, { merge: true });
   return docRef.id;
 }
 
@@ -86,12 +98,20 @@ export default function DriverVerificationButtons({
   name,
   phone,
   vehicleNumber,
+  authUid,
+  vehicleType,
+  driverPhotoUrl,
+  activeDeviceId,
   onSubmitted,
   onBack,
 }: {
   name: string;
   phone: string;
   vehicleNumber: string;
+  authUid?: string;
+  vehicleType?: string;
+  driverPhotoUrl?: string;
+  activeDeviceId?: string;
   onSubmitted?: (driverId: string) => void;
   onBack?: () => void;
 }) {
@@ -123,7 +143,7 @@ export default function DriverVerificationButtons({
 
     // Use provided driver details
     const exampleName = name;
-    const examplePhone = phone;
+    const examplePhone = phone.replace(/\D/g, '');
     const exampleVehicleNumber = vehicleNumber;
 
     try {
@@ -141,6 +161,10 @@ export default function DriverVerificationButtons({
         name: exampleName,
         phone: examplePhone,
         vehicleNumber: exampleVehicleNumber,
+        authUid,
+        vehicleType,
+        driverPhotoUrl,
+        activeDeviceId,
         rcImageUrl: rcUrl,
         licenseImageUrl: licenseUrl,
       });
@@ -217,7 +241,7 @@ export default function DriverVerificationButtons({
 
           <View style={styles.noticeBox}>
             <Text style={styles.noticeTitle}>Important</Text>
-            <Text style={styles.noticeText}>Only one verification request is allowed per phone number.</Text>
+            <Text style={styles.noticeText}>Your OTP verified mobile number and name are saved with these files. Next time, the same number can restore driver access on another mobile.</Text>
           </View>
 
           <Pressable style={styles.submitButton} onPress={handleUploadAndSave} disabled={uploading}>

@@ -1,551 +1,27 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { decode, encode } from 'base-64';
 import { Audio } from 'expo-av';
 import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import {
-    getAuth, onAuthStateChanged,
-    PhoneAuthProvider, signInWithCredential,
-    signOut
-} from 'firebase/auth';
-import {
-    addDoc, arrayUnion, collection,
-    deleteDoc,
-    deleteField,
-    doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
-} from 'firebase/firestore';
-import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
-import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-    Alert,
-    Animated,
-    Dimensions,
-    FlatList,
-    Image,
-    Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
-    StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
-} from 'react-native';
+import { getAuth, onAuthStateChanged, PhoneAuthProvider, signInWithCredential, signOut } from 'firebase/auth';
+import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { WebView } from 'react-native-webview';
 import DriverVerificationButtons from '../../components/driver-verification';
-import {
-    FARE_ADJUSTMENTS,
-    PricingDemandLevel,
-    PricingRideType,
-    SHARE_AUTO_FARE_SETTINGS,
-    SURGE_SETTINGS,
-    VEHICLE_DISTANCE_SLABS,
-    VEHICLE_FARE_SETTINGS,
-} from '../../lib/fare-settings';
-
-/* ================= FIREBASE CONFIG ================= */
-const firebaseConfig = {
-  apiKey: 'AIzaSyDPcG1HOj5c4_HSgapAjzAu5tXPMHXekTg',
-  authDomain: 'share-it-9a030.firebaseapp.com',
-  projectId: 'share-it-9a030',
-  storageBucket: 'share-it-9a030.firebasestorage.app',
-  messagingSenderId: '100914160826',
-  appId: '1:100914160826:web:e1ab817586378e67e9ce83',
-  measurementId: 'G-6FFJRK004F',
-};
-
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
-const storage = getStorage(app);
-const SCREEN_HEIGHT = Dimensions.get('window').height;
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
-const ACTIVE_RIDE_BUTTON_WIDTH = 140;
-const ACTIVE_RIDE_BUTTON_HEIGHT = 48;
-const DRIVER_SUBSCRIPTION_AMOUNT = 10;
-const DRIVER_SUBSCRIPTION_DAYS = 28;
-const RAZORPAY_KEY_ID = 'rzp_test_SlamQeH59EZ2yd';
-const EARN_REWARD_AMOUNT = 5;
-
-type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
-type DriverVehicleType = 'Bike' | 'Cycle' | 'Auto' | 'Cab';
-type Coord = { latitude: number; longitude: number };
-interface Ride {
-  id?: string; type: RideType;
-  fare: number; baseFare: number; tip: number;
-  distance: number; pickup: Coord; drop: Coord; encryptedOTP: string;
-  acceptedAtMs?: number;
-  pickupReachMinutes?: number;
-  pickupAddr?: string; dropAddr?: string;
-  passengerId?: string;
-  passengerName?: string;
-  passengerPhone?: string;
-  status: 'waiting' | 'accepted' | 'started';
-  driverId?: string | null;
-  driverPhone?: string;
-  driverName?: string;
-  driverPhotoUrl?: string;
-  vehiclePlate?: string;
-  driverLocation?: Coord;
-  createdAt?: any;
-  shareAutoPassengerIds?: string[];
-  shareAutoPassengerNames?: string[];
-  shareAutoPassengerPhones?: string[];
-  shareAutoPassengerPickups?: Coord[];
-  shareAutoPassengerDrops?: Coord[];
-  shareAutoPassengerPickupAddrs?: string[];
-  shareAutoPassengerDropAddrs?: string[];
-  shareAutoPassengerDistances?: number[];
-  shareAutoPassengerFares?: number[];
-  shareAutoPassengerEncryptedOTPs?: string[];
-  shareAutoPickupCompletedIds?: string[];
-  shareAutoDropCompletedIds?: string[];
-  shareAutoCancelledPassengerIds?: string[];
-  shareAutoFareRebalance?: {
-    active: boolean;
-    cancelledPassengerId: string;
-    cancelledPassengerName?: string;
-    chargedFare: number;
-    remainingFare: number;
-    remainingPassengerIds: string[];
-    extraFares: number[];
-    newFares: number[];
-    totalNewFare: number;
-    requestedAtMs: number;
-    driverApproved?: boolean;
-    passengerApprovedIds?: string[];
-    passengerDeclinedIds?: string[];
-  };
-  shareAutoSeats?: number;
-  shareAutoGroupKey?: string;
-  shareAutoMatchWay?: 'A' | 'B';
-  shareAutoRouteNote?: string;
-  comboMode?: 'PARCEL_PLUS_BIKE';
-  comboParcelSenderId?: string;
-  comboParcelSenderName?: string;
-  comboParcelSenderPhone?: string;
-  comboParcelPickup?: Coord;
-  comboParcelDrop?: Coord;
-  comboParcelPickupAddr?: string;
-  comboParcelDropAddr?: string;
-  comboParcelDistance?: number;
-  comboParcelFare?: number;
-  comboParcelEncryptedOTP?: string;
-  comboTotalFare?: number;
-  comboTotalDistance?: number;
-  comboStage?: 'parcel_pickup' | 'passenger_pickup' | 'passenger_drop' | 'parcel_drop';
-  earnBookedByUserId?: string;
-  earnBookedByName?: string;
-  earnBookedByEmail?: string;
-  earnPassengerName?: string;
-  earnPassengerPhone?: string;
-  earnPassengerEmail?: string;
-}
-
-interface ShareAutoPool {
-  id?: string;
-  passengerId: string;
-  passengerName: string;
-  passengerPhone: string;
-  pickup: Coord;
-  drop: Coord;
-  pickupAddr?: string;
-  dropAddr?: string;
-  createdAt?: any;
-  status: 'searching' | 'matched' | 'expired';
-}
-
-interface RideHistory {
-  id?: string;
-  rideId: string;
-  rideType: RideType;
-  pickupAddr?: string;
-  dropAddr?: string;
-  fare: number;
-  status: 'completed' | 'cancelled';
-  cancelledBy?: 'DRIVER' | 'PASSENGER';
-  driverId?: string;
-  driverName?: string;
-  passengerId?: string;
-  passengerName?: string;
-  appFeeToApp?: number;
-  driverPayout?: number;
-  hiddenEarnSurcharge?: number;
-  pickupReachMinutes?: number;
-  createdAt?: any;
-}
-
-interface ChatMessage {
-  text: string;
-  senderId: string;
-  senderRole: 'USER' | 'DRIVER';
-  senderName?: string;
-  targetPassengerId?: string;
-  targetPassengerName?: string;
-  createdAt: number;
-}
-
-interface HelpAnswer {
-  text: string;
-  byName: string;
-  byPhone?: string;
-  byEmail?: string;
-  createdAtMs: number;
-}
-
-interface HelpQuestion {
-  id?: string;
-  question: string;
-  askedByName: string;
-  askedByPhone?: string;
-  askedByEmail?: string;
-  createdAtMs: number;
-  answers?: HelpAnswer[];
-}
-
-interface PoolPassenger {
-  id: string;
-  name: string;
-  phone: string;
-  pickup: Coord;
-  drop: Coord;
-  pickupAddr?: string;
-  dropAddr?: string;
-}
-
-const isActiveRideStatus = (status: Ride['status'] | 'cancelled') =>
-  status === 'waiting' || status === 'accepted' || status === 'started';
-
-interface ShareAutoMatchResult {
-  way: 'A' | 'B';
-  passengers: PoolPassenger[];
-  score: number;
-}
-
-const icons = { Bike: '🏍️', Cycle: '🚲', Auto: '🛺', Cab: '🚕', ShareAuto: '👥', Parcel: '📦' };
-const SECRET_KEY = process.env.EXPO_PUBLIC_OTP_SECRET_KEY || '';
-const FIVE_MIN_MS = 5 * 60 * 1000;
-const HYDERABAD_CENTER: Coord = { latitude: 17.385, longitude: 78.4867 };
-const HYDERABAD_SERVICE_RADIUS_KM = 40;
-const HYDERABAD_POPULAR_AREAS = [
-  'Ameerpet',
-  'Amberpet',
-  'Apollo Hospitals Jubilee Hills',
-  'Aramghar',
-  'Asif Nagar',
-  'Assembly',
-  'Arts College railway station',
-  'Asian Cine Square Mall',
-  'AIG Hospitals Gachibowli',
-  'Balanagar',
-  'Barkatpura',
-  'Bharat Nagar',
-  'Bharat Nagar railway station',
-  'Begumpet',
-  'Begumpet railway station',
-  'BN Reddy Nagar',
-  'Bolarum',
-  'Botanical Garden',
-  'Botanical Garden Kondapur',
-  'Budvel',
-  'Care Hospitals Banjara Hills',
-  'Charminar',
-  'Chaitanyapuri',
-  'Chandrayangutta',
-  'Chandanagar',
-  'Champapet',
-  'Chikkadpally',
-  'City Center Mall',
-  'CMR Central Mall',
-  'Current Location',
-  'Dabirpura railway station',
-  'Dilsukhnagar',
-  'Durgam Cheruvu',
-  'DSL Virtue Mall',
-  'ESI Hospital',
-  'Falaknuma',
-  'Falaknuma railway station',
-  'Fateh Nagar railway station',
-  'Financial District',
-  'Forum Sujana Mall',
-  'Gachibowli',
-  'Gandhi Bhavan',
-  'Gandhi Hospital',
-  'Global Hospitals Lakdikapul',
-  'Golnaka',
-  'Gudimalkapur',
-  'Hafeezpet railway station',
-  'Habsiguda',
-  'Himayatnagar',
-  'Hi-Tech City railway station',
-  'Hitech City',
-  'Hyderabad Deccan railway station',
-  'Hyderguda',
-  'Inorbit Mall',
-  'Irrum Manzil',
-  'Irrum Manzil Galleria Mall',
-  'Isnapur',
-  'JNTU College',
-  'JBS Parade Ground',
-  'Jamai Osmania railway station',
-  'Jalagam Vengal Rao Park',
-  'Jeedimetla',
-  'Jubilee Hills Check Post',
-  'Jubilee Hills Road No. 5',
-  'Kacheguda railway station',
-  'KBR National Park',
-  'KIMS Hospitals Secunderabad',
-  'Kondapur',
-  'Kothaguda',
-  'Kothapet',
-  'Kothapet (road stops)',
-  'Koti',
-  'Krishna Kanth Park',
-  'Lakdi-ka-pul',
-  'LB Nagar',
-  'Lumbini Park',
-  'Madhapur',
-  'Madhura Nagar',
-  'Manikonda',
-  'Manjeera Mall',
-  'Mettuguda',
-  'MG Bus Station',
-  'Musarambagh',
-  'Musheerabad',
-  'Nampally',
-  'Nanakramguda',
-  'Nehru Zoological Park',
-  'New Market',
-  'NMDC',
-  'NTR Gardens',
-  'NIMS Hospital Punjagutta',
-  'Narayanguda',
-  'Nagole',
-  'Nature Cure Hospital railway station',
-  'Next Galleria Mall',
-  'Osmania General Hospital',
-  'Osmania Medical College',
-  'Panjagutta',
-  'Parade Ground',
-  'Patancheru',
-  'Peddamma Temple',
-  'Puppalaguda',
-  'Public Gardens Hyderabad',
-  'Punjagutta',
-  'Prakash Nagar',
-  'Rajendranagar',
-  'Rasoolpura',
-  'Raidurg',
-  'Rainbow Children\'s Hospital Banjara Hills',
-  'Sanjeevaiah Park',
-  'Sarath City Capital Mall',
-  'Saroornagar',
-  'Secunderabad',
-  'Secunderabad East',
-  'Secunderabad Junction railway station',
-  'Secunderabad West',
-  'Shaikpet',
-  'Shalibanda',
-  'Shamshabad',
-  'Shilparamam',
-  'Sitafalmandi railway station',
-  'South India Shopping Mall',
-  'SR Nagar',
-  'Stadium',
-  'Suchitra',
-  'Sunshine Hospitals Secunderabad',
-  'Tarnaka',
-  'Tolichowki',
-  'Uppal',
-  'Uppuguda',
-  'Vanasthalipuram',
-  'Victoria Memorial',
-  'Vidyanagar',
-  'Yusufguda',
-  'Zoo Park'
-];
-const HYDERABAD_POPULAR_AREA_POINTS: Array<{ name: string; coord: Coord }> = [
-  { name: 'Ameerpet', coord: { latitude: 17.4375, longitude: 78.4483 } },
-  { name: 'Erragadda', coord: { latitude: 17.4583, longitude: 78.4220 } },
-  { name: 'Miyapur', coord: { latitude: 17.4960, longitude: 78.3578 } },
-  { name: 'KPHB', coord: { latitude: 17.4948, longitude: 78.3996 } },
-  { name: 'Kukatpally', coord: { latitude: 17.4850, longitude: 78.4138 } },
-  { name: 'Balanagar', coord: { latitude: 17.4766, longitude: 78.4486 } },
-  { name: 'Moosapet', coord: { latitude: 17.4686, longitude: 78.4302 } },
-  { name: 'Bharat Nagar', coord: { latitude: 17.4810, longitude: 78.4050 } },
-  { name: 'SR Nagar', coord: { latitude: 17.4300, longitude: 78.4225 } },
-  { name: 'Khairatabad', coord: { latitude: 17.4048, longitude: 78.4590 } },
-  { name: 'Lakdi-ka-pul', coord: { latitude: 17.3987, longitude: 78.4899 } },
-  { name: 'Nampally', coord: { latitude: 17.3920, longitude: 78.4678 } },
-  { name: 'Gandhi Bhavan', coord: { latitude: 17.4001, longitude: 78.4748 } },
-  { name: 'Osmania Medical College', coord: { latitude: 17.4150, longitude: 78.4788 } },
-  { name: 'MG Bus Station', coord: { latitude: 17.4258, longitude: 78.4485 } },
-  { name: 'Malakpet', coord: { latitude: 17.3731, longitude: 78.5022 } },
-  { name: 'Dilsukhnagar', coord: { latitude: 17.3688, longitude: 78.5247 } },
-  { name: 'Chaitanyapuri', coord: { latitude: 17.3556, longitude: 78.5186 } },
-  { name: 'LB Nagar', coord: { latitude: 17.3457, longitude: 78.5522 } },
-  { name: 'Nagole', coord: { latitude: 17.3641, longitude: 78.5556 } },
-  { name: 'Uppal', coord: { latitude: 17.4058, longitude: 78.5591 } },
-  { name: 'Tarnaka', coord: { latitude: 17.4286, longitude: 78.5382 } },
-  { name: 'Mettuguda', coord: { latitude: 17.4170, longitude: 78.5290 } },
-  { name: 'Secunderabad East', coord: { latitude: 17.4537, longitude: 78.5000 } },
-  { name: 'Parade Ground', coord: { latitude: 17.4430, longitude: 78.4913 } },
-  { name: 'Paradise', coord: { latitude: 17.3968, longitude: 78.4738 } },
-  { name: 'Prakash Nagar', coord: { latitude: 17.4395, longitude: 78.4887 } },
-  { name: 'Madhura Nagar', coord: { latitude: 17.4515, longitude: 78.4979 } },
-  { name: 'Yusufguda', coord: { latitude: 17.4527, longitude: 78.4923 } },
-  { name: 'Jubilee Hills Check Post', coord: { latitude: 17.4310, longitude: 78.4118 } },
-  { name: 'Peddamma Temple', coord: { latitude: 17.4250, longitude: 78.4072 } },
-  { name: 'Raidurg', coord: { latitude: 17.4250, longitude: 78.3872 } },
-  { name: 'Musheerabad', coord: { latitude: 17.4433, longitude: 78.5112 } },
-  { name: 'RTC Cross Roads', coord: { latitude: 17.4153, longitude: 78.4481 } },
-  { name: 'Narayanguda', coord: { latitude: 17.4031, longitude: 78.5056 } },
-  { name: 'Sultan Bazaar', coord: { latitude: 17.3865, longitude: 78.4830 } },
-  { name: 'Financial District', coord: { latitude: 17.4311, longitude: 78.3875 } },
-  { name: 'Nanakramguda', coord: { latitude: 17.4562, longitude: 78.3577 } },
-  { name: 'Kothaguda', coord: { latitude: 17.4484, longitude: 78.3870 } },
-  { name: 'Shilparamam', coord: { latitude: 17.4382, longitude: 78.3999 } },
-  { name: 'Lingampally', coord: { latitude: 17.4870, longitude: 78.3777 } },
-  { name: 'Nalagandla', coord: { latitude: 17.4327, longitude: 78.3785 } },
-  { name: 'Chandanagar', coord: { latitude: 17.4852, longitude: 78.3322 } },
-  { name: 'Patancheru', coord: { latitude: 17.4849, longitude: 78.1686 } },
-  { name: 'Isnapur', coord: { latitude: 17.4299, longitude: 78.2952 } },
-  { name: 'Mehdipatnam', coord: { latitude: 17.3950, longitude: 78.4325 } },
-  { name: 'Attapur', coord: { latitude: 17.3675, longitude: 78.4295 } },
-  { name: 'Hyderguda', coord: { latitude: 17.3989, longitude: 78.4764 } },
-  { name: 'Shaikpet', coord: { latitude: 17.3901, longitude: 78.4138 } },
-  { name: 'Manikonda', coord: { latitude: 17.4377, longitude: 78.3905 } },
-  { name: 'Puppalaguda', coord: { latitude: 17.3720, longitude: 78.3983 } },
-  { name: 'Masab Tank', coord: { latitude: 17.4217, longitude: 78.4724 } },
-  { name: 'NMDC', coord: { latitude: 17.4267, longitude: 78.4074 } },
-  { name: 'Asif Nagar', coord: { latitude: 17.4069, longitude: 78.4141 } },
-  { name: 'Gudimalkapur', coord: { latitude: 17.3830, longitude: 78.4563 } },
-  { name: 'Charminar', coord: { latitude: 17.3616, longitude: 78.4747 } },
-  { name: 'Shalibanda', coord: { latitude: 17.3601, longitude: 78.4790 } },
-  { name: 'Falaknuma', coord: { latitude: 17.3665, longitude: 78.4750 } },
-  { name: 'Chandrayangutta', coord: { latitude: 17.3470, longitude: 78.4830 } },
-  { name: 'Uppuguda', coord: { latitude: 17.3591, longitude: 78.4922 } },
-  { name: 'Bahadurpura', coord: { latitude: 17.3634, longitude: 78.4836 } },
-  { name: 'Amberpet', coord: { latitude: 17.3990, longitude: 78.5030 } },
-  { name: 'Golnaka', coord: { latitude: 17.4052, longitude: 78.5201 } },
-  { name: 'Adikmet', coord: { latitude: 17.3995, longitude: 78.4970 } },
-  { name: 'Vidyanagar', coord: { latitude: 17.4327, longitude: 78.4672 } },
-  { name: 'Barkatpura', coord: { latitude: 17.3950, longitude: 78.5000 } },
-  { name: 'Kothapet', coord: { latitude: 17.3668, longitude: 78.5169 } },
-  { name: 'Saroornagar', coord: { latitude: 17.3520, longitude: 78.5406 } },
-  { name: 'Champapet', coord: { latitude: 17.3461, longitude: 78.5230 } },
-  { name: 'BN Reddy Nagar', coord: { latitude: 17.3684, longitude: 78.5185 } },
-  { name: 'Vanasthalipuram', coord: { latitude: 17.3257, longitude: 78.5369 } },
-  { name: 'Hayathnagar', coord: { latitude: 17.3174, longitude: 78.5477 } },
-  { name: 'Alwal', coord: { latitude: 17.5000, longitude: 78.5143 } },
-  { name: 'Tirumalagiri', coord: { latitude: 17.4516, longitude: 78.4930 } },
-  { name: 'Bolarum', coord: { latitude: 17.5063, longitude: 78.5333 } },
-  { name: 'Suchitra', coord: { latitude: 17.4841, longitude: 78.4294 } },
-  { name: 'Jeedimetla', coord: { latitude: 17.4873, longitude: 78.4055 } },
-  { name: 'Kompally', coord: { latitude: 17.5506, longitude: 78.4298 } },
-  { name: 'Medchal', coord: { latitude: 17.5937, longitude: 78.4318 } },
-  { name: 'Sarath City Capital Mall', coord: { latitude: 17.4493, longitude: 78.3349 } },
-  { name: 'Inorbit Mall', coord: { latitude: 17.4571, longitude: 78.3561 } },
-  { name: 'Forum Sujana Mall', coord: { latitude: 17.4479, longitude: 78.3801 } },
-  { name: 'GVK One Mall', coord: { latitude: 17.4424, longitude: 78.4067 } },
-  { name: 'Next Galleria Mall', coord: { latitude: 17.4325, longitude: 78.4114 } },
-  { name: 'Irrum Manzil Galleria Mall', coord: { latitude: 17.4325, longitude: 78.4505 } },
-  { name: 'Central Mall Punjagutta', coord: { latitude: 17.4300, longitude: 78.4530 } },
-  { name: 'City Center Mall', coord: { latitude: 17.4570, longitude: 78.3688 } },
-  { name: 'Manjeera Mall', coord: { latitude: 17.4446, longitude: 78.3993 } },
-  { name: 'Asian Cine Square Mall', coord: { latitude: 17.4401, longitude: 78.3869 } },
-  { name: 'CMR Central Mall', coord: { latitude: 17.4494, longitude: 78.3824 } },
-  { name: 'South India Shopping Mall', coord: { latitude: 17.4108, longitude: 78.4097 } },
-  { name: 'Rainbow Children\'s Hospital Banjara Hills', coord: { latitude: 17.4142, longitude: 78.4413 } },
-  { name: 'Yashoda Hospitals Secunderabad', coord: { latitude: 17.4390, longitude: 78.5090 } },
-  { name: 'KIMS Hospitals Secunderabad', coord: { latitude: 17.4322, longitude: 78.5069 } },
-  { name: 'Continental Hospitals Gachibowli', coord: { latitude: 17.4422, longitude: 78.3522 } },
-  { name: 'AIG Hospitals Gachibowli', coord: { latitude: 17.4299, longitude: 78.3364 } },
-  { name: 'Sunshine Hospitals Secunderabad', coord: { latitude: 17.4551, longitude: 78.5164 } },
-  { name: 'Global Hospitals Lakdikapul', coord: { latitude: 17.4068, longitude: 78.4891 } },
-  { name: 'Osmania General Hospital', coord: { latitude: 17.4159, longitude: 78.4827 } },
-  { name: 'NIMS Hospital Punjagutta', coord: { latitude: 17.4318, longitude: 78.4451 } },
-  { name: 'KBR National Park', coord: { latitude: 17.4370, longitude: 78.4099 } },
-  { name: 'Lumbini Park', coord: { latitude: 17.4324, longitude: 78.4174 } },
-  { name: 'Sanjeevaiah Park', coord: { latitude: 17.4318, longitude: 78.4165 } },
-  { name: 'NTR Gardens', coord: { latitude: 17.4235, longitude: 78.4124 } },
-  { name: 'Indira Park', coord: { latitude: 17.4180, longitude: 78.4781 } },
-  { name: 'Jalagam Vengal Rao Park', coord: { latitude: 17.3982, longitude: 78.4015 } },
-  { name: 'Krishna Kanth Park', coord: { latitude: 17.4391, longitude: 78.3856 } },
-  { name: 'Public Gardens Hyderabad', coord: { latitude: 17.3875, longitude: 78.4767 } },
-  { name: 'Nehru Zoological Park', coord: { latitude: 17.3936, longitude: 78.4436 } },
-  { name: 'Secunderabad Junction railway station', coord: { latitude: 17.4397, longitude: 78.4986 } },
-  { name: 'Hyderabad Deccan railway station', coord: { latitude: 17.3882, longitude: 78.4867 } },
-  { name: 'Kacheguda railway station', coord: { latitude: 17.3775, longitude: 78.5036 } },
-  { name: 'Lingampalli railway station', coord: { latitude: 17.5015, longitude: 78.3706 } },
-  { name: 'Hafeezpet railway station', coord: { latitude: 17.4505, longitude: 78.3660 } },
-  { name: 'Hi-Tech City railway station', coord: { latitude: 17.4477, longitude: 78.3796 } },
-  { name: 'Borabanda railway station', coord: { latitude: 17.5010, longitude: 78.3916 } },
-  { name: 'Sanat Nagar railway station', coord: { latitude: 17.3997, longitude: 78.4778 } },
-  { name: 'Fateh Nagar railway station', coord: { latitude: 17.4761, longitude: 78.4018 } },
-  { name: 'Nature Cure Hospital railway station', coord: { latitude: 17.4140, longitude: 78.4540 } },
-  { name: 'Yakutpura railway station', coord: { latitude: 17.3736, longitude: 78.4871 } },
-  { name: 'Dabirpura railway station', coord: { latitude: 17.3833, longitude: 78.4986 } },
-  { name: 'Malakpet railway station', coord: { latitude: 17.3724, longitude: 78.5029 } },
-  { name: 'Uppuguda railway station', coord: { latitude: 17.3570, longitude: 78.4888 } },
-  { name: 'Sitafalmandi railway station', coord: { latitude: 17.4347, longitude: 78.5017 } },
-  { name: 'Jamai Osmania railway station', coord: { latitude: 17.4051, longitude: 78.5001 } },
-  { name: 'Vidyanagar railway station', coord: { latitude: 17.4318, longitude: 78.4684 } }
-];
-const DEFAULT_MAP_REGION = {
-  ...HYDERABAD_CENTER,
-  latitudeDelta: 0.05,
-  longitudeDelta: 0.05,
-};
-const DRIVER_DESTINATION_MARKER_RADIUS_KM = 4.5;
-const DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT = 3;
-const DRIVER_ALERT_SOUND_URL = 'https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg';
-const CHAT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/pop.ogg';
-const VEHICLE_SELECT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg';
-const PRIMARY_ACTION_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/pop.ogg';
-const GAME_BIRD_HIT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/pop.ogg';
-const GAME_ZOMBIE_HIT_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg';
-const GAME_UNLOCK_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg';
-const MARKER_PLACE_SOUND_URL = 'https://actions.google.com/sounds/v1/cartoon/bell_ding.ogg';
-const encryptOTP = (otp: string) => encode(otp.split('').reverse().join('') + SECRET_KEY);
-const decryptOTP = (val: string) => decode(val).replace(SECRET_KEY, '').split('').reverse().join('');
-const generateOTP = () => Math.floor(1000 + Math.random() * 9000).toString();
-
-type AppErrorBoundaryProps = {
-  children: React.ReactNode;
-};
-
-type AppErrorBoundaryState = {
-  hasError: boolean;
-};
-
-class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
-  constructor(props: AppErrorBoundaryProps) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(): AppErrorBoundaryState {
-    return { hasError: true };
-  }
-
-  componentDidCatch() {
-    // Keep the app alive and show fallback UI in production crashes.
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#FFF' }}>
-          <Text style={{ fontSize: 20, fontWeight: '700', marginBottom: 10 }}>Something went wrong</Text>
-          <Text style={{ textAlign: 'center', color: '#555' }}>
-            Please reopen the app. If this continues, sign out and sign in again.
-          </Text>
-        </View>
-      );
-    }
-
-    return this.props.children;
-  }
-}
+import { FARE_ADJUSTMENTS, PricingDemandLevel, PricingRideType, SHARE_AUTO_FARE_SETTINGS, SURGE_SETTINGS, VEHICLE_DISTANCE_SLABS, VEHICLE_FARE_SETTINGS } from '../../lib/fare-settings';
+import { AppErrorBoundary } from './ride-home/AppErrorBoundary';
+import { auth, db, firebaseConfig, storage } from './ride-home/firebase-core';
+import { decryptOTP, encryptOTP, generateOTP } from './ride-home/otp';
+import { styles } from './ride-home/styles';
+import { ACTIVE_RIDE_BUTTON_HEIGHT, ACTIVE_RIDE_BUTTON_WIDTH, CHAT_SOUND_URL, CURRENT_LOC_FAB_RISE, DEFAULT_MAP_REGION, DRIVER_ALERT_SOUND_URL, DRIVER_DESTINATION_MARKER_RADIUS_KM, DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT, DRIVER_SUBSCRIPTION_AMOUNT, DRIVER_SUBSCRIPTION_DAYS, EARN_REWARD_AMOUNT, FIVE_MIN_MS, GAME_BIRD_HIT_SOUND_URL, GAME_UNLOCK_SOUND_URL, GAME_ZOMBIE_HIT_SOUND_URL, HYDERABAD_CENTER, HYDERABAD_POPULAR_AREA_POINTS, HYDERABAD_POPULAR_AREAS, HYDERABAD_SERVICE_RADIUS_KM, MARKER_PLACE_SOUND_URL, PRIMARY_ACTION_SOUND_URL, RAZORPAY_KEY_ID, SCREEN_HEIGHT, SCREEN_WIDTH, VEHICLE_SELECT_SOUND_URL, icons } from './ride-home/constants';
+import type { ChatMessage, Coord, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoMatchResult, ShareAutoPool } from './ride-home/types';
+import { calcDist, getAreaLabelFromCoord, getClosestPopularAreaMatch, getMandalName, getNearestPopularArea, getPrimaryAreaName, getRideCreatedAtMs, getSearchSuggestions, isFreshWaitingRide, isValidEmail, isValidMobileFn, isValidVehiclePlate, isWithinHyderabadService } from './ride-home/geo';
+import { calcSegmentEtaMinutes, findPartialShareAuto, findShareAutoMatch, toPoolPassenger } from './ride-home/shareAutoMatching';
+import { calculateRideFare, getPricingDemandLevel, type DemandLevel } from './ride-home/pricing';
+import { isActiveRideStatus } from './ride-home/types';
 
 function RideAppScreen() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -565,7 +41,6 @@ function RideAppScreen() {
   const [driverVerified, setDriverVerified] = useState(false);
   const [driverSubscriptionActive, setDriverSubscriptionActive] = useState(false);
   const [driverSubscriptionExpiresAt, setDriverSubscriptionExpiresAt] = useState<Timestamp | null>(null);
-  const [driverHasPaymentHistory, setDriverHasPaymentHistory] = useState(false);
   const [showDriverVerification, setShowDriverVerification] = useState(false);
   const [waitingForVerification, setWaitingForVerification] = useState(false);
   const [showDriverPaymentModal, setShowDriverPaymentModal] = useState(false);
@@ -616,6 +91,9 @@ function RideAppScreen() {
   const [bookingValidation, setBookingValidation] = useState<{ visible: boolean; title?: string; message?: string }>({ visible: false });
   const recaptchaVerifier = useRef<any | null>(null);
   const driverSubscriptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceInstallIdRef = useRef('');
+  const otpClaimPhoneRef = useRef('');
+  const driverSessionMovedRef = useRef(false);
   const postDriverCheckoutMessage = (message: string) => {
     (window as any).ReactNativeWebView?.postMessage(message);
   };
@@ -694,9 +172,121 @@ function RideAppScreen() {
     `;
   }, [driverName, driverPhone, profileName, profilePhone]);
 
+  const normalizePhoneDigits = useCallback((value?: string | null) => {
+    const digits = (value || '').replace(/\D/g, '');
+    return digits.length > 10 ? digits.slice(-10) : digits;
+  }, []);
+
+  const ensureDeviceInstallId = useCallback(async () => {
+    if (deviceInstallIdRef.current) return deviceInstallIdRef.current;
+    let savedId = await AsyncStorage.getItem('shareit_device_install_id');
+    if (!savedId) {
+      savedId = `device_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      await AsyncStorage.setItem('shareit_device_install_id', savedId);
+    }
+    deviceInstallIdRef.current = savedId;
+    return savedId;
+  }, []);
+
+  const isDriverVehicleTypeValue = useCallback((value: unknown): value is DriverVehicleType => (
+    value === 'Bike' || value === 'Cycle' || value === 'Auto' || value === 'Cab'
+  ), []);
+
+  const applyDriverRecordToState = useCallback(async (driverId: string, data: any) => {
+    const registeredPhone = normalizePhoneDigits(data?.phone || data?.registeredPhone || driverId);
+    setDriverDocId(driverId);
+    setDriverName(data?.name || data?.registeredName || profileName || '');
+    setDriverPhone(registeredPhone);
+    setVehiclePlate(data?.vehicleNumber || data?.vehiclePlate || '');
+    setDriverPhotoUrl(data?.driverPhotoUrl || '');
+    await AsyncStorage.setItem('driver_doc_id', driverId);
+
+    if (isDriverVehicleTypeValue(data?.vehicleType)) {
+      setDriverVehicle(data.vehicleType);
+      await AsyncStorage.setItem('driver_vehicle', data.vehicleType);
+    }
+  }, [isDriverVehicleTypeValue, normalizePhoneDigits, profileName]);
+
+  const clearDriverIdentityOnThisDevice = useCallback(async () => {
+    await AsyncStorage.removeItem('driver_doc_id');
+    await AsyncStorage.removeItem('driver_vehicle');
+    setDriverDocId(null);
+    setDriverVehicle(null);
+    setDriverName('');
+    setDriverPhone('');
+    setVehiclePlate('');
+    setDriverPhotoUrl('');
+    setDriverPhotoUri('');
+    setDriverVerified(false);
+    setDriverSubscriptionActive(false);
+    setDriverSubscriptionExpiresAt(null);
+    setWaitingForVerification(false);
+    setShowDriverVerification(false);
+    setShowDriverPaymentModal(false);
+    setDriverPaymentError('');
+    setIsIdentitySet(false);
+    setCurrentRide(null);
+  }, []);
+
+  const handleDriverSessionMoved = useCallback(async () => {
+    if (driverSessionMovedRef.current) return;
+    driverSessionMovedRef.current = true;
+    await clearDriverIdentityOnThisDevice();
+    Alert.alert('Driver account moved', 'This driver account was opened on another mobile with OTP. Please verify OTP again here if you want to use this phone.');
+    try {
+      await signOut(auth);
+    } finally {
+      driverSessionMovedRef.current = false;
+    }
+  }, [clearDriverIdentityOnThisDevice]);
+
+  const syncDriverRecordForPhone = useCallback(async (
+    phone: string,
+    options?: { claimDevice?: boolean; userId?: string; nameFallback?: string }
+  ) => {
+    const normalizedPhone = normalizePhoneDigits(phone);
+    if (!isValidMobileFn(normalizedPhone)) return false;
+
+    const localDeviceId = await ensureDeviceInstallId();
+    const driverRef = doc(db, 'drivers', normalizedPhone);
+    const driverSnap = await getDoc(driverRef);
+    if (!driverSnap.exists()) return false;
+
+    const data = driverSnap.data();
+    const activeDeviceId = data?.activeDeviceId || '';
+    const canUseOnThisDevice = !activeDeviceId || activeDeviceId === localDeviceId || options?.claimDevice;
+
+    if (!canUseOnThisDevice) {
+      await handleDriverSessionMoved();
+      return true;
+    }
+
+    if (!activeDeviceId || activeDeviceId !== localDeviceId || options?.claimDevice) {
+      await setDoc(driverRef, {
+        activeDeviceId: localDeviceId,
+        activeAuthUid: options?.userId || auth.currentUser?.uid || '',
+        lastDriverOtpLoginAt: Timestamp.now(),
+        phone: normalizedPhone,
+        ...(options?.nameFallback && !data?.name ? { name: options.nameFallback } : {}),
+      }, { merge: true });
+    }
+
+    await applyDriverRecordToState(normalizedPhone, {
+      ...data,
+      activeDeviceId: localDeviceId,
+      ...(options?.nameFallback && !data?.name ? { name: options.nameFallback } : {}),
+    });
+    return true;
+  }, [applyDriverRecordToState, ensureDeviceInstallId, handleDriverSessionMoved, normalizePhoneDigits]);
+
+  useEffect(() => {
+    void ensureDeviceInstallId();
+  }, [ensureDeviceInstallId]);
+
   useEffect(() => {
     (async () => {
       try {
+        await ensureDeviceInstallId();
         const id = await AsyncStorage.getItem('driver_doc_id');
         if (id) {
           setDriverDocId(id);
@@ -706,21 +296,39 @@ function RideAppScreen() {
         console.warn('driver_doc_id load failed', e);
       }
     })();
-  }, []);
+  }, [ensureDeviceInstallId]);
 
   useEffect(() => {
     if (!driverDocId) return;
     const docRef = doc(db, 'drivers', driverDocId);
     const unsub = onSnapshot(docRef, async (snapshot) => {
+      if (!snapshot.exists()) {
+        await clearDriverIdentityOnThisDevice();
+        return;
+      }
+
       const data = snapshot.data();
+      const localDeviceId = await ensureDeviceInstallId();
+      const activeDeviceId = data?.activeDeviceId || '';
+      if (activeDeviceId && activeDeviceId !== localDeviceId) {
+        await handleDriverSessionMoved();
+        return;
+      }
+      if (!activeDeviceId && localDeviceId) {
+        setDoc(docRef, {
+          activeDeviceId: localDeviceId,
+          activeAuthUid: auth.currentUser?.uid || '',
+          lastDriverSessionSeenAt: Timestamp.now(),
+        }, { merge: true }).catch(() => {});
+      }
+
+      await applyDriverRecordToState(driverDocId, data);
       const isVerified = !!data?.isVerified;
-      const hasPaymentHistory = !!data?.subscriptionPaidAt || !!data?.subscriptionPaymentId || !!data?.subscriptionExpiresAt;
       const subscriptionExpiresAt = data?.subscriptionExpiresAt ?? null;
       const subscriptionExpiresAtMs = subscriptionExpiresAt?.toMillis?.() ?? 0;
       const isSubscriptionActive = isVerified && data?.subscriptionActive === true && subscriptionExpiresAtMs > Date.now();
 
       setDriverVerified(isVerified);
-      setDriverHasPaymentHistory(hasPaymentHistory);
       setDriverSubscriptionExpiresAt(subscriptionExpiresAt);
       setDriverSubscriptionActive(isSubscriptionActive);
 
@@ -730,14 +338,10 @@ function RideAppScreen() {
       }
 
       if (!isVerified) {
-        setWaitingForVerification(false);
+        setWaitingForVerification(!!data?.rcImageUrl || data?.verificationStatus === 'pending');
         setShowDriverVerification(false);
-        setShowDriverPaymentModal(hasPaymentHistory);
+        setShowDriverPaymentModal(false);
         setDriverPaymentError('');
-        setDriverSubscriptionActive(false);
-        if (!hasPaymentHistory) {
-          setDriverSubscriptionExpiresAt(null);
-        }
         setIsIdentitySet(false);
         return;
       }
@@ -779,7 +383,7 @@ function RideAppScreen() {
         driverSubscriptionTimerRef.current = null;
       }
     };
-  }, [driverDocId]);
+  }, [applyDriverRecordToState, clearDriverIdentityOnThisDevice, driverDocId, ensureDeviceInstallId, handleDriverSessionMoved]);
 
   const handleDriverSubscriptionPayment = async () => {
     if (!driverDocId) {
@@ -876,27 +480,39 @@ function RideAppScreen() {
         Alert.alert('No OTP requested', 'Please request an OTP first.');
         return;
       }
+      const requestedPhone = normalizePhoneDigits(mobileNumber);
+      otpClaimPhoneRef.current = requestedPhone;
       const cred = PhoneAuthProvider.credential(verificationId, otpInput);
       const userCred = await signInWithCredential(auth, cred);
       const user = userCred.user;
       if (user) {
+        const verifiedPhone = normalizePhoneDigits(requestedPhone || user.phoneNumber);
         try {
           const userRef = doc(db, 'users', user.uid);
           const userSnap = await getDoc(userRef);
           if (!userSnap.exists()) {
             await setDoc(userRef, {
-              phone: mobileNumber,
+              phone: verifiedPhone,
               name: nameForSignup,
               createdAt: Timestamp.now()
             });
           } else if (nameForSignup && !userSnap.data()?.name) {
-            await updateDoc(userRef, { name: nameForSignup });
+            await updateDoc(userRef, { name: nameForSignup, phone: verifiedPhone });
+          } else if (verifiedPhone && userSnap.data()?.phone !== verifiedPhone) {
+            await updateDoc(userRef, { phone: verifiedPhone });
           }
         } catch {
           // ignore Firestore write failures here
         }
+        await syncDriverRecordForPhone(verifiedPhone, {
+          claimDevice: true,
+          userId: user.uid,
+          nameFallback: nameForSignup,
+        });
+        otpClaimPhoneRef.current = '';
       }
     } catch (err: any) {
+      otpClaimPhoneRef.current = '';
       const msg = err?.message || 'OTP verification failed. Please try again.';
       Alert.alert('Verification failed', msg);
     }
@@ -946,6 +562,9 @@ function RideAppScreen() {
   const [earnPassengerPhone, setEarnPassengerPhone] = useState('');
   const [earnPassengerEmail, setEarnPassengerEmail] = useState('');
   const [earnRideType, setEarnRideType] = useState<'Bike' | 'Auto' | 'Cab'>('Bike');
+  const [earnWithdrawMobile, setEarnWithdrawMobile] = useState('');
+  const [earnWithdrawSaving, setEarnWithdrawSaving] = useState(false);
+  const [earnEmergencySaving, setEarnEmergencySaving] = useState(false);
   const [chatTargetPassengerId, setChatTargetPassengerId] = useState<string>('ALL');
   const arrivalAutoPulse = useRef(new Animated.Value(0)).current;
   const driverPromoPulse = useRef(new Animated.Value(0)).current;
@@ -1049,6 +668,12 @@ function RideAppScreen() {
   const currentUserId = auth.currentUser?.uid || '';
   const activeRide = mode === 'USER' ? userBookedRide : currentRide;
 
+  useEffect(() => {
+    const verifiedPhone = normalizePhoneDigits(profilePhone || mobileNumber);
+    if (verifiedPhone) setDriverPhone(verifiedPhone);
+    if (profileName && !driverName) setDriverName(profileName);
+  }, [driverName, mobileNumber, normalizePhoneDigits, profileName, profilePhone]);
+
   const updateRideSafely = async (
     rideId: string | undefined,
     payload: Record<string, unknown>,
@@ -1092,7 +717,10 @@ function RideAppScreen() {
     },
     onPanResponderRelease: (_, gestureState) => {
       const endVal = Math.max(-passengerCardPullUpMax, Math.min(0, passengerCardDragStartRef.current + gestureState.dy));
-      const shouldExpand = endVal < -(passengerCardPullUpMax * 0.42) || gestureState.vy < -0.45;
+      const shouldCollapse = endVal > -(passengerCardPullUpMax * 0.62) || gestureState.vy > 0.45;
+      const shouldExpand = isPassengerCardExpanded
+        ? !shouldCollapse
+        : endVal < -(passengerCardPullUpMax * 0.42) || gestureState.vy < -0.45;
       animatePassengerCard(shouldExpand);
     },
     onPanResponderTerminate: () => {
@@ -1672,88 +1300,6 @@ function RideAppScreen() {
     return usedToday < DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT;
   };
 
-  const isValidMobileFn = (val: string) => /^[6-9]\d{9}$/.test(val);
-  const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
-  const isValidVehiclePlate = (val: string) => /^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$/.test(val.toUpperCase());
-
-  const normalizeSearchString = (value: string) =>
-    value
-      .toLowerCase()
-      .replace(/[\s\-()\[\]\/_,]+/g, ' ')
-      .replace(/[^a-z0-9 ]/g, '')
-      .trim();
-
-  const getLevenshteinDistance = (a: string, b: string) => {
-    const matrix: number[][] = Array.from({ length: a.length + 1 }, () => []);
-    for (let i = 0; i <= a.length; i += 1) matrix[i][0] = i;
-    for (let j = 0; j <= b.length; j += 1) matrix[0][j] = j;
-
-    for (let i = 1; i <= a.length; i += 1) {
-      for (let j = 1; j <= b.length; j += 1) {
-        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j - 1] + cost
-        );
-      }
-    }
-
-    return matrix[a.length][b.length];
-  };
-
-  const getClosestPopularAreaMatch = (query: string) => {
-    const normalizedQuery = normalizeSearchString(query);
-    if (!normalizedQuery) return null;
-
-    const candidates = HYDERABAD_POPULAR_AREAS.map((area) => ({
-      area,
-      normalizedArea: normalizeSearchString(area),
-    }));
-
-    const exactMatch = candidates
-      .filter(
-        (candidate) =>
-          normalizedQuery.includes(candidate.normalizedArea) ||
-          candidate.normalizedArea.includes(normalizedQuery)
-      )
-      .sort((a, b) => b.normalizedArea.length - a.normalizedArea.length)[0];
-    if (exactMatch) return exactMatch.area;
-
-    const bestMatch = candidates.reduce<{ area: string; score: number } | null>((current, { area, normalizedArea }) => {
-      const score = getLevenshteinDistance(normalizedQuery, normalizedArea);
-      if (!current || score < current.score) {
-        return { area, score };
-      }
-      return current;
-    }, null);
-
-    if (!bestMatch) return null;
-
-    const threshold = Math.max(2, Math.floor(normalizedQuery.length * 0.25));
-    return bestMatch.score <= threshold ? bestMatch.area : null;
-  };
-
-  const getSearchSuggestions = (query: string) => {
-    const normalizedQuery = normalizeSearchString(query);
-    if (!normalizedQuery || normalizedQuery === 'current location') return [];
-
-    const queryTerms = normalizedQuery.split(' ').filter(Boolean);
-    if (!queryTerms.length) return [];
-
-    return HYDERABAD_POPULAR_AREAS
-      .map((area) => {
-        const normalizedArea = normalizeSearchString(area);
-        const termScore = queryTerms.reduce((score, term) => score + (normalizedArea.includes(term) ? term.length : 0), 0);
-        const exactScore = normalizedArea.startsWith(normalizedQuery) ? 100 : 0;
-        return { area, score: exactScore + termScore };
-      })
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 4)
-      .map((item) => item.area);
-  };
-
   const handleSearchFieldFocus = (field: 'pickup' | 'drop') => {
     if (!isPassengerCardExpanded) animatePassengerCard(true);
     setActiveSearchField(field);
@@ -1772,419 +1318,12 @@ function RideAppScreen() {
     await handleSearch(field, suggestion);
   };
 
-  const getPrimaryAreaName = (address: string | undefined, fallback: string) => {
-    if (!address?.trim()) return fallback;
-
-    const lowerAddress = address.toLowerCase();
-    const matchedPopularArea = HYDERABAD_POPULAR_AREAS.find((area) => lowerAddress.includes(area.toLowerCase()));
-    if (matchedPopularArea) return matchedPopularArea;
-
-    const fuzzyArea = getClosestPopularAreaMatch(address);
-    if (fuzzyArea) return fuzzyArea;
-
-    const firstSegment = address
-      .split(',')
-      .map((segment) => segment.trim())
-      .find((segment) => segment.length > 0);
-
-    if (!firstSegment) return fallback;
-
-    const cleanedSegment = firstSegment
-      .replace(/\b\d{1,6}\b/g, '')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-
-    return cleanedSegment || fallback;
-  };
-
-  const getMandalName = (address: string | undefined, fallback: string) => {
-    if (!address?.trim()) return fallback;
-
-    const parts = address
-      .split(',')
-      .map((segment) => segment.trim())
-      .filter(Boolean);
-
-    if (!parts.length) return fallback;
-
-    const mandalPart = parts.find((segment) => /\bmandal\b/i.test(segment));
-    if (mandalPart) return mandalPart;
-
-    const secondPart = parts[1];
-    if (secondPart) return secondPart;
-
-    return fallback;
-  };
-
-  const getNearestPopularArea = (coord: Coord) => {
-    const toRad = (value: number) => (value * Math.PI) / 180;
-    const distanceKm = (a: Coord, b: Coord) => {
-      const R = 6371;
-      const dLat = toRad(b.latitude - a.latitude);
-      const dLon = toRad(b.longitude - a.longitude);
-      const val =
-        (Math.sin(dLat / 2) ** 2) +
-        (Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * (Math.sin(dLon / 2) ** 2));
-      return R * 2 * Math.atan2(Math.sqrt(val), Math.sqrt(1 - val));
-    };
-
-    let nearest = HYDERABAD_POPULAR_AREA_POINTS[0];
-    let nearestDistance = Number.POSITIVE_INFINITY;
-
-    HYDERABAD_POPULAR_AREA_POINTS.forEach((point) => {
-      const currentDistance = distanceKm(coord, point.coord);
-      if (currentDistance < nearestDistance) {
-        nearest = point;
-        nearestDistance = currentDistance;
-      }
-    });
-
-    return nearest?.name || 'Hyderabad';
-  };
-
-  const getAreaLabelFromCoord = async (coord: Coord, fallbackLabel: string) => {
-    try {
-      const places = await Location.reverseGeocodeAsync(coord);
-      const place = places[0];
-      if (!place) return fallbackLabel;
-
-      return (
-        place.name ||
-        place.district ||
-        place.subregion ||
-        place.city ||
-        place.region ||
-        fallbackLabel
-      );
-    } catch {
-      return fallbackLabel;
-    }
-  };
-
-  const getRideCreatedAtMs = (createdAt: any): number => {
-    if (!createdAt) return 0;
-    if (typeof createdAt?.toMillis === 'function') return createdAt.toMillis();
-    if (typeof createdAt?.toDate === 'function') return createdAt.toDate().getTime();
-    if (createdAt instanceof Date) return createdAt.getTime();
-    if (typeof createdAt === 'number') return createdAt;
-    return 0;
-  };
-
-  const isFreshWaitingRide = (ride: Ride) => {
-    const createdAtMs = getRideCreatedAtMs(ride.createdAt);
-    if (!createdAtMs) return false;
-    return ride.status === 'waiting' && (Date.now() - createdAtMs) <= FIVE_MIN_MS;
-  };
-
   const getDistanceFromDriver = (ride: Ride) => {
     if (!location) return Number.POSITIVE_INFINITY;
     return calcDist(location, ride.pickup);
   };
 
-  const getClusterRadiusKm = (points: Coord[]) => {
-    if (!points.length) return Number.POSITIVE_INFINITY;
-    const center = {
-      latitude: points.reduce((sum, p) => sum + p.latitude, 0) / points.length,
-      longitude: points.reduce((sum, p) => sum + p.longitude, 0) / points.length,
-    };
-    return Math.max(...points.map((p) => calcDist(center, p)));
-  };
-
-  const toLocalPointKm = (origin: Coord, point: Coord) => {
-    const kLat = 111;
-    const kLon = 111 * Math.cos((origin.latitude * Math.PI) / 180);
-    return {
-      x: (point.longitude - origin.longitude) * kLon,
-      y: (point.latitude - origin.latitude) * kLat,
-    };
-  };
-
-  const pointToSegmentDistanceKm = (point: Coord, start: Coord, end: Coord) => {
-    const origin = start;
-    const p = toLocalPointKm(origin, point);
-    const a = toLocalPointKm(origin, start);
-    const b = toLocalPointKm(origin, end);
-    const abx = b.x - a.x;
-    const aby = b.y - a.y;
-    const apx = p.x - a.x;
-    const apy = p.y - a.y;
-    const ab2 = abx * abx + aby * aby;
-    if (ab2 === 0) return Math.hypot(apx, apy);
-    const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / ab2));
-    const projX = a.x + t * abx;
-    const projY = a.y + t * aby;
-    return Math.hypot(p.x - projX, p.y - projY);
-  };
-
-  const toPoolPassenger = (pool: ShareAutoPool): PoolPassenger => ({
-    id: pool.passengerId,
-    name: pool.passengerName,
-    phone: pool.passengerPhone,
-    pickup: pool.pickup,
-    drop: pool.drop,
-    pickupAddr: pool.pickupAddr,
-    dropAddr: pool.dropAddr,
-  });
-
-  const calcSegmentEtaMinutes = (km: number) => Math.max(2, Math.round((km / 22) * 60));
-
-  const isAWayGroup = (allPassengers: PoolPassenger[]) => {
-    const pickupRadius = getClusterRadiusKm(allPassengers.map((p) => p.pickup));
-    const dropRadius = getClusterRadiusKm(allPassengers.map((p) => p.drop));
-    return pickupRadius <= 2 && dropRadius <= 4;
-  };
-
-  const getLongestTripPassenger = (allPassengers: PoolPassenger[]) => {
-    return allPassengers.reduce((best, current) => {
-      const bestDist = calcDist(best.pickup, best.drop);
-      const currDist = calcDist(current.pickup, current.drop);
-      return currDist > bestDist ? current : best;
-    }, allPassengers[0]);
-  };
-
-  const isBWayGroup = (allPassengers: PoolPassenger[]) => {
-    if (allPassengers.length < 2) return false;
-    const longest = getLongestTripPassenger(allPassengers);
-    const others = allPassengers.filter((p) => p.id !== longest.id);
-
-    const allWithinDeviation = others.every((p) => {
-      const pickupDeviation = pointToSegmentDistanceKm(p.pickup, longest.pickup, longest.drop);
-      const dropDeviation = pointToSegmentDistanceKm(p.drop, longest.pickup, longest.drop);
-      return pickupDeviation <= 2 && dropDeviation <= 3;
-    });
-
-    if (!allWithinDeviation) return false;
-
-    const etaCandidates = others.map((p) => calcSegmentEtaMinutes(calcDist(longest.pickup, p.pickup)));
-    const maxEta = Math.max(...etaCandidates);
-    return maxEta <= 30;
-  };
-
-  const getBWayScore = (allPassengers: PoolPassenger[]) => {
-    const longest = getLongestTripPassenger(allPassengers);
-    const others = allPassengers.filter((p) => p.id !== longest.id);
-    return others.reduce((sum, p) => {
-      const pickupDeviation = pointToSegmentDistanceKm(p.pickup, longest.pickup, longest.drop);
-      const dropDeviation = pointToSegmentDistanceKm(p.drop, longest.pickup, longest.drop);
-      const etaPenalty = calcSegmentEtaMinutes(calcDist(longest.pickup, p.pickup)) > 15 ? 3 : 0;
-      return sum + pickupDeviation + dropDeviation + etaPenalty;
-    }, 0);
-  };
-
-  const findShareAutoMatch = (selfPassenger: PoolPassenger, candidates: PoolPassenger[]): ShareAutoMatchResult | null => {
-    const getBestMatchForWay = (way: 'A' | 'B'): ShareAutoMatchResult | null => {
-      const fullMatches: ShareAutoMatchResult[] = [];
-
-      for (let i = 0; i < candidates.length; i += 1) {
-        for (let j = i + 1; j < candidates.length; j += 1) {
-          const group = [selfPassenger, candidates[i], candidates[j]];
-          if (way === 'A' && isAWayGroup(group)) {
-            const score = getClusterRadiusKm(group.map((p) => p.pickup)) + getClusterRadiusKm(group.map((p) => p.drop));
-            fullMatches.push({ way: 'A', passengers: [candidates[i], candidates[j]], score });
-          }
-          if (way === 'B' && isBWayGroup(group)) {
-            fullMatches.push({ way: 'B', passengers: [candidates[i], candidates[j]], score: getBWayScore(group) });
-          }
-        }
-      }
-
-      if (fullMatches.length > 0) {
-        return fullMatches.sort((x, y) => x.score - y.score)[0];
-      }
-
-      if (way === 'A') {
-        const aCandidates = candidates
-          .filter((passenger) => isAWayGroup([selfPassenger, passenger]))
-          .sort((x, y) => calcDist(selfPassenger.pickup, x.pickup) - calcDist(selfPassenger.pickup, y.pickup));
-
-        if (aCandidates.length > 0) {
-          return { way: 'A', passengers: [aCandidates[0]], score: calcDist(selfPassenger.pickup, aCandidates[0].pickup) };
-        }
-      } else {
-        const bCandidates = candidates
-          .filter((passenger) => isBWayGroup([selfPassenger, passenger]))
-          .sort((x, y) => {
-            const xEta = calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, x.pickup));
-            const yEta = calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, y.pickup));
-            return xEta - yEta;
-          });
-
-        if (bCandidates.length > 0) {
-          return { way: 'B', passengers: [bCandidates[0]], score: calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, bCandidates[0].pickup)) };
-        }
-      }
-
-      return null;
-    };
-
-    const chooseBetterMatch = (current: ShareAutoMatchResult | null, next: ShareAutoMatchResult | null) => {
-      if (!current) return next;
-      if (!next) return current;
-
-      const currentCount = current.passengers.length;
-      const nextCount = next.passengers.length;
-
-      if (currentCount !== nextCount) {
-        return nextCount > currentCount ? next : current;
-      }
-
-      if (current.way !== next.way) {
-        return current.way === 'A' ? current : next;
-      }
-
-      return next.score < current.score ? next : current;
-    };
-
-    return chooseBetterMatch(getBestMatchForWay('A'), getBestMatchForWay('B'));
-  };
-
-  const findPartialShareAuto = (selfPassenger: PoolPassenger, candidates: PoolPassenger[]) => {
-    const aCandidates = candidates
-      .filter((passenger) => isAWayGroup([selfPassenger, passenger]))
-      .sort((x, y) => calcDist(selfPassenger.pickup, x.pickup) - calcDist(selfPassenger.pickup, y.pickup));
-
-    if (aCandidates.length > 0) return { way: 'A' as const, passenger: aCandidates[0] };
-
-    const bCandidates = candidates
-      .filter((passenger) => isBWayGroup([selfPassenger, passenger]))
-      .sort((x, y) => {
-        const xEta = calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, x.pickup));
-        const yEta = calcSegmentEtaMinutes(calcDist(selfPassenger.pickup, y.pickup));
-        return xEta - yEta;
-      });
-
-    if (bCandidates.length > 0) return { way: 'B' as const, passenger: bCandidates[0] };
-    return null;
-  };
-
-  type RidePricingType = PricingRideType;
-  type DemandLevel = PricingDemandLevel;
-
-  interface RideFareBreakdown {
-    distanceFare: number;
-    timeFare: number;
-    pickupFare: number;
-    surge: number;
-    fees: number;
-    nightCharge: number;
-    randomAdjustment: number;
-    minimumFare: number;
-    surgeMultiplier: number;
-    finalDiscountRate?: number;
-    extraReductionRate?: number;
-  }
-
-  interface RideFareQuote {
-    finalFare: number;
-    breakdown: RideFareBreakdown;
-  }
-
-  const getDemandLevel = (): DemandLevel => {
-    const demandFactor = getDemandFactor();
-    if (demandFactor < 0.2) return 'low';
-    if (demandFactor < 0.45) return 'normal';
-    if (demandFactor < 0.75) return 'high';
-    return 'peak';
-  };
-
-  const getSurgeMultiplier = (demandLevel: DemandLevel, timeOfDay: number) => {
-    const rushHour = (timeOfDay >= 8 && timeOfDay < 11) || (timeOfDay >= 17 && timeOfDay < 21);
-    const setting = SURGE_SETTINGS[demandLevel];
-    return rushHour ? setting.rush : setting.normal;
-  };
-
-  const isNightChargeApplicable = (timeOfDay: number) => timeOfDay >= 23 || timeOfDay < 5;
-
-  const getRandomAdjustment = () => {
-    const min = FARE_ADJUSTMENTS.randomAdjustmentMin;
-    const max = FARE_ADJUSTMENTS.randomAdjustmentMax;
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  };
-
-  const smartRoundFare = (value: number) => {
-    const rounded = Math.round(value);
-    if (rounded % 10 === 0) return rounded + 2;
-    if (rounded % 5 === 0) return rounded + 1;
-    if (rounded % 2 === 0) return rounded + 1;
-    return rounded;
-  };
-
-  const getRideFinalDiscountRate = (demandLevel: DemandLevel) => {
-    return FARE_ADJUSTMENTS.finalDiscountByDemand[demandLevel];
-  };
-
-  const calculateSlabDistanceFare = (rideType: RidePricingType, distanceKm: number) => {
-    const distance = Math.max(0, distanceKm);
-
-    const slabSetting = VEHICLE_DISTANCE_SLABS[rideType];
-    if (distance <= slabSetting.flatTillKm) return slabSetting.flatFare;
-
-    let fare = slabSetting.flatFare;
-    slabSetting.segments.forEach((segment) => {
-      if (distance > segment.startKm) {
-        const segmentEnd = segment.endKm ?? distance;
-        const travelledInSegment = Math.max(0, Math.min(distance, segmentEnd) - segment.startKm);
-        fare += travelledInSegment * segment.ratePerKm;
-      }
-    });
-
-    return fare;
-  };
-
-  const calculateRideFare = (
-    rideType: RidePricingType,
-    distanceKm: number,
-    durationMinutes: number,
-    pickupDistanceKm: number,
-    demandLevel: DemandLevel,
-    timeOfDay: number
-  ): RideFareQuote => {
-    const config = VEHICLE_FARE_SETTINGS[rideType];
-    const safeDistance = Math.max(0, distanceKm);
-    const safeDuration = Math.max(0, durationMinutes);
-    const safePickupDistance = Math.max(0, pickupDistanceKm);
-
-    const distanceFare = calculateSlabDistanceFare(rideType, safeDistance);
-    const timeFare = safeDuration * config.timeRate;
-    const pickupFare = safePickupDistance > 1.5
-      ? (safePickupDistance - 1.5) * config.pickupRate
-      : 0;
-
-    const subtotal = distanceFare + pickupFare + timeFare;
-    const surgeMultiplier = getSurgeMultiplier(demandLevel, timeOfDay);
-    const surgedSubtotal = subtotal * surgeMultiplier;
-    const surge = surgedSubtotal - subtotal;
-
-    const fees = config.platformFee;
-    const nightCharge = isNightChargeApplicable(timeOfDay)
-      ? (surgedSubtotal + fees) * FARE_ADJUSTMENTS.nightChargeRate
-      : 0;
-    const randomAdjustment = getRandomAdjustment();
-    const preRoundTotal = surgedSubtotal + fees + nightCharge + randomAdjustment;
-    const smartRounded = smartRoundFare(preRoundTotal);
-    const finalDiscountRate = getRideFinalDiscountRate(demandLevel);
-    const discountedFare = Math.round(smartRounded * (1 - finalDiscountRate));
-    const extraReductionRate = FARE_ADJUSTMENTS.extraReductionRate;
-    const extraDiscountedFare = Math.round(discountedFare * (1 - extraReductionRate));
-    const finalFare = Math.max(config.minimumFare, extraDiscountedFare);
-
-    return {
-      finalFare: Math.round(finalFare),
-      breakdown: {
-        distanceFare: Math.round(distanceFare),
-        timeFare: Math.round(timeFare),
-        pickupFare: Math.round(pickupFare),
-        surge: Math.round(surge),
-        fees: Math.round(fees),
-        nightCharge: Math.round(nightCharge),
-        randomAdjustment,
-        minimumFare: config.minimumFare,
-        surgeMultiplier,
-        finalDiscountRate,
-        extraReductionRate,
-      },
-    };
-  };
+  const getDemandLevel = () => getPricingDemandLevel(getDemandFactor);
 
   const getDemandFactor = () => {
     const activeDemand = rides.filter((r) => r.status === 'waiting').length;
@@ -2767,6 +1906,7 @@ function RideAppScreen() {
       setLoggedIn(!!user);
       if (!user) {
         if (!mounted) return;
+        await clearDriverIdentityOnThisDevice();
         setProfileName('');
         setProfileNameEdit('');
         setProfilePhone('');
@@ -2777,25 +1917,51 @@ function RideAppScreen() {
       }
 
       try {
+        await ensureDeviceInstallId();
+        const authPhone = normalizePhoneDigits(user.phoneNumber || mobileNumber);
         const userSnap = await getDoc(doc(db, 'users', user.uid));
         if (!mounted) return;
         if (userSnap.exists()) {
-          const userData = userSnap.data() as { name?: string; phone?: string; email?: string; earnWallet?: number; homeLocation?: Coord; homeLocationLabel?: string };
-          setProfileName(userData.name || '');
-          setProfileNameEdit(userData.name || '');
-          setProfilePhone(userData.phone || '');
+          const userData = userSnap.data() as { name?: string; phone?: string; email?: string; earnWallet?: number; earnWithdrawMobile?: string; homeLocation?: Coord; homeLocationLabel?: string };
+          const storedPhone = normalizePhoneDigits(userData.phone || authPhone);
+          const storedName = userData.name || nameForSignup || '';
+          setProfileName(storedName);
+          setProfileNameEdit(storedName);
+          setProfilePhone(storedPhone || '');
           setEmail(userData.email || user.email || '');
           setProfileEarnWallet(userData.earnWallet || 0);
+          setEarnWithdrawMobile(userData.earnWithdrawMobile || storedPhone || '');
           setHomeLocation(userData.homeLocation || null);
           setHomeLocationLabel(userData.homeLocationLabel || '');
+          if (authPhone && (!userData.phone || userData.phone !== authPhone)) {
+            setDoc(doc(db, 'users', user.uid), { phone: authPhone }, { merge: true }).catch(() => {});
+          }
+          if (storedPhone) {
+            const claimDevice = otpClaimPhoneRef.current === storedPhone;
+            await syncDriverRecordForPhone(storedPhone, { userId: user.uid, nameFallback: storedName, claimDevice });
+            if (claimDevice) otpClaimPhoneRef.current = '';
+          }
         } else {
-          setProfileName('');
-          setProfileNameEdit('');
-          setProfilePhone('');
+          const fallbackName = nameForSignup || '';
+          if (authPhone) {
+            await setDoc(doc(db, 'users', user.uid), {
+              phone: authPhone,
+              name: fallbackName,
+              createdAt: Timestamp.now(),
+            }, { merge: true });
+          }
+          setProfileName(fallbackName);
+          setProfileNameEdit(fallbackName);
+          setProfilePhone(authPhone || '');
           setEmail(user.email || '');
           setProfileEarnWallet(0);
           setHomeLocation(null);
           setHomeLocationLabel('');
+          if (authPhone) {
+            const claimDevice = otpClaimPhoneRef.current === authPhone;
+            await syncDriverRecordForPhone(authPhone, { userId: user.uid, nameFallback: fallbackName, claimDevice });
+            if (claimDevice) otpClaimPhoneRef.current = '';
+          }
         }
       } catch {
         if (!mounted) return;
@@ -2876,7 +2042,7 @@ function RideAppScreen() {
       authUnsubscribe();
       locationSubscription?.remove();
     };
-  }, []);
+  }, [clearDriverIdentityOnThisDevice, ensureDeviceInstallId, mobileNumber, nameForSignup, normalizePhoneDigits, syncDriverRecordForPhone]);
 
   useEffect(() => {
     let mounted = true;
@@ -3451,18 +2617,6 @@ function RideAppScreen() {
     }
   }, [destCoords, pickupCoords, rides, farePenalty]);
 
-  function calcDist(a: Coord, b: Coord) {
-    const R = 6371;
-    const dLat = (b.latitude - a.latitude) * Math.PI / 180;
-    const dLon = (b.longitude - a.longitude) * Math.PI / 180;
-    const val = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * Math.PI / 180) * Math.cos(b.latitude * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(val), Math.sqrt(1 - val));
-  }
-
-  const isWithinHyderabadService = (coord: Coord) => {
-    return calcDist(HYDERABAD_CENTER, coord) <= HYDERABAD_SERVICE_RADIUS_KM;
-  };
-
   const isComboParcelSender = (ride: Ride | null) => !!ride && ride.comboMode === 'PARCEL_PLUS_BIKE' && ride.comboParcelSenderId === currentUserId;
 
   const getUserPerspectivePickup = (ride: Ride | null) => {
@@ -3723,8 +2877,82 @@ function RideAppScreen() {
     setEarnPassengerName(profileName || '');
     setEarnPassengerPhone(profilePhone || '');
     setEarnPassengerEmail((auth.currentUser?.email || email || '').trim());
+    setEarnWithdrawMobile((prev) => prev || profilePhone || '');
     setEarnRideType('Bike');
     setShowEarnPage(true);
+  };
+
+  const saveEarnWithdrawMobile = async () => {
+    const mobile = earnWithdrawMobile.trim();
+    if (!currentUserId) {
+      Alert.alert('Login required', 'Please login before setting up withdrawals.');
+      return;
+    }
+    if (!isValidMobileFn(mobile)) {
+      Alert.alert('Invalid mobile', 'Enter the 10-digit mobile number linked to your UPI.');
+      return;
+    }
+
+    setEarnWithdrawSaving(true);
+    try {
+      await setDoc(doc(db, 'users', currentUserId), {
+        earnWithdrawMobile: mobile,
+        earnAutoWithdrawProvider: 'razorpay',
+        earnAutoWithdrawEnabled: true,
+        earnAutoWithdrawDay: 'friday_night',
+        earnAutoWithdrawMinimum: 30,
+        earnWithdrawUpdatedAt: Timestamp.now(),
+      }, { merge: true });
+      Alert.alert('Withdraw setup saved', 'Your earned money will be requested for Razorpay payout every Friday night when your balance is at least ₹30.');
+    } catch {
+      Alert.alert('Could not save', 'Please try again after a moment.');
+    } finally {
+      setEarnWithdrawSaving(false);
+    }
+  };
+
+  const requestEmergencyEarnWithdraw = async () => {
+    const mobile = earnWithdrawMobile.trim();
+    if (!currentUserId) {
+      Alert.alert('Login required', 'Please login before requesting withdrawal.');
+      return;
+    }
+    if (!isValidMobileFn(mobile)) {
+      Alert.alert('Invalid mobile', 'Enter the 10-digit mobile number linked to your UPI.');
+      return;
+    }
+    if (profileEarnWallet <= 20) {
+      Alert.alert('Not enough balance', 'Emergency withdrawal needs more than ₹20 because ₹20 is deducted as service fee.');
+      return;
+    }
+
+    const payoutAmount = profileEarnWallet - 20;
+    setEarnEmergencySaving(true);
+    try {
+      await addDoc(collection(db, 'earnWithdrawals'), {
+        userId: currentUserId,
+        name: profileName,
+        mobile,
+        provider: 'razorpay',
+        type: 'emergency',
+        requestedAmount: profileEarnWallet,
+        serviceFee: 20,
+        payoutAmount,
+        status: 'requested',
+        createdAt: Timestamp.now(),
+      });
+      await updateDoc(doc(db, 'users', currentUserId), {
+        earnWallet: 0,
+        earnWithdrawMobile: mobile,
+        earnLastEmergencyWithdrawAt: Timestamp.now(),
+      });
+      setProfileEarnWallet(0);
+      Alert.alert('Emergency withdrawal requested', `Razorpay payout request created. ₹20 service fee deducted, payout amount ₹${payoutAmount}.`);
+    } catch {
+      Alert.alert('Could not request withdrawal', 'Please try again after a moment.');
+    } finally {
+      setEarnEmergencySaving(false);
+    }
   };
 
   const bookEarnRide = async () => {
@@ -3764,13 +2992,11 @@ function RideAppScreen() {
     }
 
     const eligibleHiddenChargeRideType = ride.type === 'Bike' || ride.type === 'Auto' || ride.type === 'Cab';
+    const eligibleEarnReward = eligibleHiddenChargeRideType && baseDriverPayout > 120;
 
     try {
       const earnUserRef = doc(db, 'users', ride.earnBookedByUserId);
-      const earnUserSnap = await getDoc(earnUserRef);
-      const earnUsageCount = Number(earnUserSnap.data()?.earnUsageCount || 0);
-
-      if (earnUsageCount <= 0) {
+      if (eligibleEarnReward) {
         await updateDoc(earnUserRef, {
           earnWallet: increment(EARN_REWARD_AMOUNT),
           earnUsageCount: increment(1),
@@ -3787,14 +3013,13 @@ function RideAppScreen() {
       }
 
       await updateDoc(earnUserRef, {
-        earnUsageCount: increment(1),
+        earnIneligibleRideCount: increment(1),
       });
 
-      const appFeeToApp = eligibleHiddenChargeRideType ? EARN_REWARD_AMOUNT : 0;
       return {
-        finalFare: baseDriverPayout + appFeeToApp,
+        finalFare: baseDriverPayout,
         driverPayout: baseDriverPayout,
-        appFeeToApp,
+        appFeeToApp: 0,
       };
     } catch {
       // Do not block completion if earn settlement storage fails.
@@ -3940,6 +3165,12 @@ function RideAppScreen() {
       const downloadUrl = await getDownloadURL(photoRef);
       
       setDriverPhotoUrl(downloadUrl);
+      if (driverDocId) {
+        setDoc(doc(db, 'drivers', driverDocId), {
+          driverPhotoUrl: downloadUrl,
+          driverPhotoUpdatedAt: Timestamp.now(),
+        }, { merge: true }).catch(() => {});
+      }
       Alert.alert("Success", "Photo uploaded successfully!");
       return downloadUrl;
     } catch (error) {
@@ -4572,7 +3803,7 @@ function RideAppScreen() {
             </>
           ) : (
             <>
-              <Text style={styles.loginHintText}>We'll send a 6-digit code to verify your number.</Text>
+              <Text style={styles.loginHintText}>We&apos;ll send a 6-digit code to verify your number.</Text>
               <Pressable style={styles.loginPrimaryButton} onPress={handleSendOtp}>
                 <Text style={styles.loginPrimaryButtonText}>Send OTP</Text>
               </Pressable>
@@ -4920,7 +4151,10 @@ function RideAppScreen() {
           <>
             {(!userBookedRide || showRideHomeButton) ? (
               <>
-                <View style={styles.passengerCardHandleWrap}>
+                <View
+                  style={styles.passengerCardHandleWrap}
+                  {...(mode === 'USER' && !userBookedRide ? passengerCardPanResponder.panHandlers : {})}
+                >
                   <View style={styles.passengerCardHandle} />
                   <Text style={styles.passengerCardHandleHint}>{isPassengerCardExpanded ? 'Pull down to collapse' : 'Pull up to expand'}</Text>
                 </View>
@@ -5267,6 +4501,15 @@ function RideAppScreen() {
                                 playUiTapSound('vehicle');
                                 setDriverVehicle(v);
                                 await AsyncStorage.setItem('driver_vehicle', v);
+                                if (driverDocId) {
+                                  await setDoc(doc(db, 'drivers', driverDocId), {
+                                    vehicleType: v,
+                                    vehicleTypeUpdatedAt: Timestamp.now(),
+                                  }, { merge: true });
+                                  if (driverVerified && driverSubscriptionActive) {
+                                    setIsIdentitySet(true);
+                                  }
+                                }
                               }}
                             >
                                 <Text style={{fontSize: 30}}>{icons[v]}</Text><Text>{v}</Text>
@@ -5299,31 +4542,17 @@ function RideAppScreen() {
                         <View style={styles.pendingReviewFooter}>
                           <Text style={styles.pendingReviewFooterText}>This page stays until approval changes to true.</Text>
                         </View>
-                        {!waitingForVerification && (
-                          <Pressable
-                            style={styles.pendingReviewActionButton}
-                            onPress={() => {
-                              setShowDriverVerification(true);
-                              setDriverPaymentError('');
-                            }}
-                          >
-                            <Text style={styles.pendingReviewActionButtonText}>Resubmit documents</Text>
-                          </Pressable>
-                        )}
                       </View>
                     ) : showDriverVerification ? (
                       <View />
                     ) : (
                       <>
                         <TextInput style={styles.input} placeholder="Full Name" value={driverName} onChangeText={setDriverName} />
-                        <TextInput
-                          style={styles.input}
-                          placeholder="10-digit Indian phone"
-                          value={driverPhone}
-                          onChangeText={(v) => setDriverPhone(v.replace(/\D/g, '').slice(0, 10))}
-                          keyboardType="phone-pad"
-                          maxLength={10}
-                        />
+                        <View style={styles.driverLockedPhoneCard}>
+                          <Text style={styles.driverLockedPhoneLabel}>OTP verified mobile</Text>
+                          <Text style={styles.driverLockedPhoneValue}>{profilePhone || mobileNumber || driverPhone || 'Login phone required'}</Text>
+                          <Text style={styles.driverLockedPhoneHint}>This number is saved with your driver documents and used to restore driver access on another mobile.</Text>
+                        </View>
                         <TextInput style={styles.input} placeholder="Plate Number" value={vehiclePlate} onChangeText={(v) => setVehiclePlate(v.toUpperCase())} autoCapitalize="characters" />
                         <Text style={{fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10}}>Example: MH12AB1234</Text>
                       </>
@@ -5337,24 +4566,23 @@ function RideAppScreen() {
                               <Pressable style={styles.pendingBack} onPress={() => { setShowDriverVerification(false); setMode('USER'); }}>
                                 <Text style={styles.pendingBackText}>← Back to passenger</Text>
                               </Pressable>
-                              <Text style={styles.pendingBadge}>Under review</Text>
-                              <Text style={styles.pendingTitle}>Your documents are already submitted</Text>
-                              <Text style={styles.pendingText}>There is nothing to upload again. Our team is reviewing your RC and driving licence manually.</Text>
+                              <Text style={styles.pendingBadge}>Submitted</Text>
+                              <Text style={styles.pendingTitle}>Your request is pending for approval</Text>
+                              <Text style={styles.pendingText}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
                               <View style={styles.pendingCard}>
                                 <Text style={styles.pendingCardTitle}>What happens next</Text>
-                                <Text style={styles.pendingCardText}>1. We review your documents.</Text>
-                                <Text style={styles.pendingCardText}>2. If approved, the payment screen appears automatically.</Text>
-                                <Text style={styles.pendingCardText}>3. Pay ₹10 to activate driver access for 28 days.</Text>
-                              </View>
-                              <View style={styles.pendingReviewFooter}>
-                                <Text style={styles.pendingReviewFooterText}>No documents need to be uploaded again.</Text>
+                                <Text style={styles.pendingCardText}>We review your RC and driving licence manually. Once approved, driver access is unlocked automatically.</Text>
                               </View>
                             </View>
                           ) : (
                             <DriverVerificationButtons
                               name={driverName}
-                              phone={driverPhone}
+                              phone={profilePhone || mobileNumber || driverPhone}
                               vehicleNumber={vehiclePlate}
+                              authUid={currentUserId}
+                              vehicleType={driverVehicle || undefined}
+                              driverPhotoUrl={driverPhotoUrl}
+                              activeDeviceId={deviceInstallIdRef.current}
                               onSubmitted={(id) => {
                                 setShowDriverVerification(false);
                                 setWaitingForVerification(true);
@@ -5370,17 +4598,15 @@ function RideAppScreen() {
                       </Modal>
                     )}
 
-                    {showDriverPaymentModal && !driverSubscriptionActive && (driverVerified || driverHasPaymentHistory) && (
+                    {showDriverPaymentModal && driverVerified && !driverSubscriptionActive && (
                       <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={() => {}}>
                         <View style={styles.subscriptionModal}>
                           <ScrollView contentContainerStyle={styles.subscriptionScroll} showsVerticalScrollIndicator={false}>
                             <View style={styles.subscriptionHero}>
-                              <Text style={styles.subscriptionBadge}>{driverHasPaymentHistory && !driverVerified ? 'Reactivate driver access' : 'Driver access approved'}</Text>
-                              <Text style={styles.subscriptionTitle}>{driverHasPaymentHistory && !driverVerified ? 'Pay to restore your driver pass' : 'Activate your 28-day driver pass'}</Text>
+                              <Text style={styles.subscriptionBadge}>Driver access approved</Text>
+                              <Text style={styles.subscriptionTitle}>Activate your 28-day driver pass</Text>
                               <Text style={styles.subscriptionSubtitle}>
-                                {driverHasPaymentHistory && !driverVerified
-                                  ? 'Your documents are already on file. You do not need to upload them again. Pay ₹10 to restore driver access.'
-                                  : 'Your documents are verified. Pay once to unlock ride notifications, ride acceptance, and driver tools for the next 28 days.'}
+                                Your documents are verified. Pay once to unlock ride notifications, ride acceptance, and driver tools for the next 28 days.
                               </Text>
                             </View>
 
@@ -5395,8 +4621,7 @@ function RideAppScreen() {
                               <Text style={styles.subscriptionFeatureLine}>• Live ride notifications for nearby bookings</Text>
                               <Text style={styles.subscriptionFeatureLine}>• Ride acceptance and driver tools</Text>
                               <Text style={styles.subscriptionFeatureLine}>• Access remains active for 28 days from payment</Text>
-                              <Text style={styles.subscriptionFeatureLine}>• If your approval is turned off later, access pauses until it is restored</Text>
-                              <Text style={styles.subscriptionFeatureLine}>• No document upload is needed for reactivation</Text>
+                              <Text style={styles.subscriptionFeatureLine}>• If your documents are changed back to false, access is cancelled and you must submit again</Text>
                             </View>
 
                             {!!driverSubscriptionExpiresAt && (
@@ -5482,13 +4707,15 @@ function RideAppScreen() {
                     
                     <Pressable
                       style={styles.primaryButton}
-                      onPress={() => {
-                        if (!driverName || !driverPhone || !vehiclePlate) {
+                      onPress={async () => {
+                        const verifiedDriverPhone = normalizePhoneDigits(profilePhone || mobileNumber || driverPhone);
+                        const finalDriverName = (driverName || profileName).trim();
+                        if (!finalDriverName || !vehiclePlate) {
                           Alert.alert('Required', 'Fill all details.');
                           return;
                         }
-                        if (!isValidMobileFn(driverPhone)) {
-                          Alert.alert('Invalid mobile', 'Enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9.');
+                        if (!isValidMobileFn(verifiedDriverPhone)) {
+                          Alert.alert('OTP mobile required', 'Please login again with OTP so your verified mobile number can be attached to the driver documents.');
                           return;
                         }
                         if (!isValidVehiclePlate(vehiclePlate)) {
@@ -5499,6 +4726,15 @@ function RideAppScreen() {
                           Alert.alert('Photo required', 'Please upload a profile photo before proceeding.');
                           return;
                         }
+                        setDriverName(finalDriverName);
+                        setDriverPhone(verifiedDriverPhone);
+                        if (currentUserId) {
+                          await setDoc(doc(db, 'users', currentUserId), {
+                            name: finalDriverName,
+                            phone: verifiedDriverPhone,
+                          }, { merge: true });
+                        }
+                        await ensureDeviceInstallId();
                         setShowDriverVerification(true);
                       }}
                     >
@@ -6379,11 +5615,59 @@ function RideAppScreen() {
             <View style={{ width: 42 }} />
           </View>
 
-          <ScrollView contentContainerStyle={styles.earnPageContent}>
+          <ScrollView contentContainerStyle={styles.earnPageContent} showsVerticalScrollIndicator={false}>
             <View style={styles.earnSummaryCard}>
               <Text style={styles.earnSummaryLabel}>Earned Amount</Text>
               <Text style={styles.earnSummaryValue}>₹{profileEarnWallet}</Text>
-              <Text style={styles.earnSummaryHint}>First completed Earn booking gives ₹{EARN_REWARD_AMOUNT} reward.</Text>
+              <Text style={styles.earnSummaryHint}>Every eligible completed Earn booking adds ₹{EARN_REWARD_AMOUNT} to your wallet.</Text>
+            </View>
+
+            <View style={styles.earnWithdrawCard}>
+              <View style={styles.earnWithdrawTopRow}>
+                <View>
+                  <Text style={styles.earnWithdrawEyebrow}>Razorpay payout</Text>
+                  <Text style={styles.earnWithdrawTitle}>Get my money</Text>
+                </View>
+                <View style={styles.earnWithdrawBadge}>
+                  <Text style={styles.earnWithdrawBadgeText}>Min ₹30</Text>
+                </View>
+              </View>
+              <Text style={styles.earnWithdrawText}>
+                Add the mobile number linked to your UPI. Friday night withdrawal is automatic when your balance reaches ₹30.
+              </Text>
+              <TextInput
+                style={styles.earnWithdrawInput}
+                placeholder="UPI linked mobile number"
+                value={earnWithdrawMobile}
+                onChangeText={(v) => setEarnWithdrawMobile(v.replace(/\D/g, '').slice(0, 10))}
+                keyboardType="phone-pad"
+                maxLength={10}
+              />
+              <Pressable
+                style={[styles.earnMoneyButton, earnWithdrawSaving && { opacity: 0.7 }]}
+                onPress={saveEarnWithdrawMobile}
+                disabled={earnWithdrawSaving}
+              >
+                <Text style={styles.earnMoneyButtonText}>{earnWithdrawSaving ? 'Saving...' : 'Get my money'}</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.earnEmergencyButton, (earnEmergencySaving || profileEarnWallet <= 20) && { opacity: 0.55 }]}
+                onPress={requestEmergencyEarnWithdraw}
+                disabled={earnEmergencySaving || profileEarnWallet <= 20}
+              >
+                <Text style={styles.earnEmergencyButtonText}>
+                  {earnEmergencySaving ? 'Requesting...' : `Emergency withdraw now - fee ₹20, receive ₹${Math.max(0, profileEarnWallet - 20)}`}
+                </Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.earnTermsCard}>
+              <Text style={styles.earnTermsTitle}>Terms and conditions</Text>
+              <Text style={styles.earnTermsPoint}>• Ride fare must be above ₹120 to earn ₹{EARN_REWARD_AMOUNT}.</Text>
+              <Text style={styles.earnTermsPoint}>• Reward is added only after the ride is completed.</Text>
+              <Text style={styles.earnTermsPoint}>• Friday night withdrawal is automatic through Razorpay when the wallet has minimum ₹30.</Text>
+              <Text style={styles.earnTermsPoint}>• Emergency withdrawal sends the full wallet immediately after deducting ₹20 service fee.</Text>
+              <Text style={styles.earnTermsPoint}>• The mobile number must be linked with the UPI account where you want to receive money.</Text>
             </View>
 
             <Text style={styles.earnSectionTitle}>Passenger Data</Text>
@@ -6834,409 +6118,3 @@ export default function App() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFF' },
-  loginScreen: { flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 0 },
-  loginHero: { backgroundColor: '#0B61FF', paddingTop: 56, paddingBottom: 32, paddingHorizontal: 24, alignItems: 'center' },
-  loginBrandName: { fontSize: 42, fontWeight: '900', color: '#FFFFFF', marginBottom: 8 },
-  loginBrandTagline: { fontSize: 16, fontWeight: '700', color: '#E6F0FF' },
-  loginForm: { paddingHorizontal: 24, paddingTop: 32, paddingBottom: 24 },
-  loginFormTitle: { fontSize: 26, fontWeight: '900', color: '#0B61FF', marginBottom: 6 },
-  loginFormSubtitle: { fontSize: 14, color: '#475569', marginBottom: 24, lineHeight: 20 },
-  loginInputWrap: { marginBottom: 18 },
-  loginLabel: { fontSize: 12, fontWeight: '700', color: '#111827', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 },
-  loginInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#111827' },
-  loginPrimaryButton: { backgroundColor: '#0B61FF', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8, marginBottom: 12 },
-  loginPrimaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
-
-  validationModalWrap: { flex: 1, backgroundColor: 'rgba(6,8,23,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  validationModalCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 20, alignItems: 'center' },
-  validationModalTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginBottom: 8, textAlign: 'center' },
-  validationModalMessage: { color: '#374151', fontSize: 14, textAlign: 'center', marginBottom: 18 },
-  validationModalButton: { backgroundColor: '#0F172A', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 12 },
-  validationModalButtonText: { color: '#FFFFFF', fontWeight: '800' },
-  loginSecondaryButton: { borderWidth: 1, borderColor: '#0B61FF', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  loginSecondaryButtonText: { color: '#0B61FF', fontSize: 16, fontWeight: '700' },
-  loginHintText: { fontSize: 13, color: '#6B7280', marginBottom: 20, marginTop: 4, lineHeight: 18 },
-  loginFooter: { position: 'absolute', bottom: 32, left: 24, right: 24, textAlign: 'center', fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
-  map: { flex: 1 },
-  loyaltyBackground: { flex: 1, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', padding: 30 },
-  loyaltyIcon: { fontSize: 80, marginBottom: 20 },
-  loyaltyTitle: { fontSize: 22, fontWeight: '900', color: '#1C1C1E', marginBottom: 20, textAlign: 'center' },
-  loyaltyCard: { backgroundColor: '#F8F9FB', padding: 20, borderRadius: 20, width: '100%', marginBottom: 30 },
-  loyaltyText: { fontSize: 16, color: '#3A3A3C', marginBottom: 15, lineHeight: 22 },
-  loyaltySlogan: { fontSize: 14, color: '#007AFF', fontWeight: 'bold' },
-  proBackground: { flex: 1, backgroundColor: '#F8F9FB' },
-  brandingContainer: { padding: 30, alignItems: 'center', width: '100%' },
-  brandName: { fontSize: 42, fontWeight: '900', color: '#007AFF', marginBottom: 10 },
-  slogan: { fontSize: 18, fontWeight: '700', color: '#1C1C1E', textAlign: 'center', marginBottom: 20 },
-  dashboard: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: 'white', padding: 20, borderRadius: 25, elevation: 4, width: '100%', justifyContent:'space-between' },
-  historyBtn: { marginTop: 12, backgroundColor: '#0A8F48', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12 },
-  historyBtnText: { color: 'white', fontWeight: '700' },
-  changeVehicleBtn: { marginTop: 10, backgroundColor: '#1D4ED8', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12 },
-  changeVehicleBtnText: { color: '#FFFFFF', fontWeight: '700' },
-  dashItem: { width: '45%', alignItems: 'center', marginBottom: 15 },
-  dashVal: { fontSize: 22, fontWeight: '900', color: '#1C1C1E' },
-  dashLab: { fontSize: 12, color: '#8E8E93', fontWeight: 'bold' },
-  driverInfoCard: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#E5E7EB', padding: 12, marginTop: 10 },
-  driverInfoTitle: { fontSize: 14, fontWeight: '900', color: '#111827', marginBottom: 6 },
-  driverInfoText: { fontSize: 13, color: '#374151', marginBottom: 3 },
-  driverAvailabilityCard: { width: '100%', backgroundColor: '#F8FAFC', borderColor: '#CBD5E1', borderWidth: 1, borderRadius: 12, padding: 10, marginTop: 10, marginBottom: 4, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  driverAvailabilityTitle: { color: '#0F172A', fontWeight: '800' },
-  driverAvailabilityHint: { color: '#475569', fontSize: 12, marginTop: 2 },
-  header: { position: 'absolute', top: 50, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10 },
-  currentLocFab: { position: 'absolute', right: 18, bottom: 235 + CURRENT_LOC_FAB_RISE, width: 24, height: 24, borderRadius: 12, backgroundColor: '#007AFF', alignItems: 'center', justifyContent: 'center', elevation: 8, shadowColor: '#111827', shadowOpacity: 0.2, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, zIndex: 12, borderWidth: 1, borderColor: '#005FCC' },
-  currentLocFabText: { fontSize: 12, color: '#FFFFFF', fontWeight: '900' },
-  activeRideButton: { position: 'absolute', width: ACTIVE_RIDE_BUTTON_WIDTH, height: ACTIVE_RIDE_BUTTON_HEIGHT, backgroundColor: '#0E7490', borderRadius: 26, elevation: 12, shadowColor: '#0F172A', shadowOpacity: 0.28, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, zIndex: 12, alignItems: 'center', justifyContent: 'center' },
-  activeRideButtonPressable: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center' },
-  activeRideButtonText: { color: '#FFFFFF', fontWeight: '800', letterSpacing: 0.2 },
-  badge: { backgroundColor: 'white', padding: 12, borderRadius: 25, elevation: 5 },
-  logout: { backgroundColor: '#FF3B30', width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  bottomCard: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: 'white', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20, maxHeight: '100%' },
-  bottomCardOverlay: { top: 0, bottom: 0, left: 0, right: 0, width: '100%', borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 12, zIndex: 25, elevation: 30 },
-  passengerCardHandleWrap: { alignItems: 'center', marginBottom: 10, marginTop: -8 },
-  passengerCardHandle: { width: 54, height: 6, borderRadius: 4, backgroundColor: '#CBD5E1', marginBottom: 6 },
-  passengerCardHandleHint: { fontSize: 11, color: '#64748B', fontWeight: '600' },
-  passengerExpandedPage: { maxHeight: SCREEN_HEIGHT - 56 },
-  passengerExpandedPageContent: { paddingBottom: 24 },
-  passengerExpandedHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
-  passengerExpandedTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginBottom: 3 },
-  passengerExpandedSubTitle: { fontSize: 12, color: '#475569', marginBottom: 10, lineHeight: 18 },
-  passengerExpandedBackBtn: { backgroundColor: '#E0E7FF', borderWidth: 1, borderColor: '#A5B4FC', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
-  passengerExpandedBackBtnText: { color: '#3730A3', fontWeight: '800', fontSize: 12 },
-  passengerExpandedBottomBackBtn: { marginTop: 10, backgroundColor: '#111827', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
-  passengerExpandedBottomBackBtnText: { color: '#FFFFFF', fontWeight: '800' },
-  input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
-  primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
-  verificationModal: { flex: 1, backgroundColor: '#0B1020' },
-  subscriptionModal: { flex: 1, backgroundColor: '#07111F' },
-  subscriptionScroll: { paddingHorizontal: 24, paddingTop: 72, paddingBottom: 36 },
-  subscriptionHero: { marginBottom: 18 },
-  subscriptionBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.08)', color: '#DCE7FF', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', marginBottom: 14, letterSpacing: 0.4 },
-  subscriptionTitle: { color: '#FFFFFF', fontSize: 30, fontWeight: '900', lineHeight: 36, marginBottom: 10 },
-  subscriptionSubtitle: { color: '#C9D5F2', fontSize: 15, lineHeight: 22 },
-  subscriptionPriceCard: { backgroundColor: '#0F1A31', borderRadius: 24, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginBottom: 14 },
-  subscriptionPriceLabel: { color: '#9DB0DB', textTransform: 'uppercase', letterSpacing: 1, fontSize: 11, fontWeight: '700', marginBottom: 4 },
-  subscriptionPriceValue: { color: '#FFFFFF', fontSize: 40, fontWeight: '900', lineHeight: 44 },
-  subscriptionPriceMeta: { color: '#B8C6E6', fontSize: 13, marginTop: 6 },
-  subscriptionFeatureCard: { backgroundColor: '#F7F9FF', borderRadius: 24, padding: 18, marginBottom: 14, borderWidth: 1, borderColor: '#DEE6FF' },
-  subscriptionFeatureTitle: { color: '#0F172A', fontSize: 17, fontWeight: '900', marginBottom: 10 },
-  subscriptionFeatureLine: { color: '#334155', fontSize: 14, lineHeight: 21, marginBottom: 6 },
-  subscriptionNoticeCard: { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginBottom: 14 },
-  subscriptionNoticeTitle: { color: '#DCE7FF', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 },
-  subscriptionNoticeText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
-  subscriptionErrorCard: { backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: 16, padding: 12, borderWidth: 1, borderColor: 'rgba(239,68,68,0.28)', marginBottom: 14 },
-  subscriptionErrorText: { color: '#FCA5A5', fontSize: 13, lineHeight: 18 },
-  subscriptionPayButton: { backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 16, alignItems: 'center', marginTop: 4 },
-  subscriptionPayButtonText: { color: '#08111F', fontSize: 16, fontWeight: '900' },
-  subscriptionFootnote: { color: '#9DB0DB', fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 14 },
-  checkoutModalWrap: { flex: 1, backgroundColor: '#07111F', paddingTop: 54, paddingHorizontal: 16, paddingBottom: 16 },
-  checkoutHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 },
-  checkoutTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '900', marginBottom: 4 },
-  checkoutSubtitle: { color: '#C9D5F2', fontSize: 13, lineHeight: 18 },
-  checkoutClose: { color: '#B7C7FF', fontSize: 15, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 6 },
-  checkoutWebviewShell: { flex: 1, borderRadius: 24, overflow: 'hidden', backgroundColor: '#FFFFFF' },
-  checkoutWebview: { flex: 1, backgroundColor: '#FFFFFF' },
-  pendingReviewPage: { flex: 1, paddingHorizontal: 22, paddingTop: 34, paddingBottom: 24, justifyContent: 'center' },
-  pendingReviewBadgeRow: { marginBottom: 14 },
-  pendingReviewBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(139, 164, 255, 0.16)', color: '#B7C7FF', borderWidth: 1, borderColor: 'rgba(139, 164, 255, 0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
-  pendingReviewTitle: { color: '#FFFFFF', fontSize: 30, fontWeight: '900', lineHeight: 36, marginBottom: 12 },
-  pendingReviewText: { color: '#D4DAF0', fontSize: 15, lineHeight: 22, marginBottom: 18 },
-  pendingReviewCard: { backgroundColor: '#121A33', borderRadius: 24, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginBottom: 14 },
-  pendingReviewCardTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginBottom: 10 },
-  pendingReviewCardText: { color: '#C7D1ED', fontSize: 14, lineHeight: 20, marginBottom: 6 },
-  pendingReviewFooter: { backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  pendingReviewFooterText: { color: '#9DB0DB', fontSize: 12, lineHeight: 18, textAlign: 'center' },
-  pendingReviewActionButton: { marginTop: 16, backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 14, alignItems: 'center' },
-  pendingReviewActionButtonText: { color: '#08111F', fontSize: 15, fontWeight: '900' },
-  pendingWrap: { flex: 1, paddingHorizontal: 24, paddingTop: 72, backgroundColor: '#0B1020' },
-  pendingBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(139, 164, 255, 0.18)', color: '#B7C7FF', borderWidth: 1, borderColor: 'rgba(139, 164, 255, 0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', marginBottom: 14 },
-  pendingTitle: { color: '#FFFFFF', fontSize: 28, fontWeight: '900', lineHeight: 34, marginBottom: 12 },
-  pendingText: { color: '#D4DAF0', fontSize: 15, lineHeight: 22, marginBottom: 18 },
-  pendingCard: { backgroundColor: '#121A33', borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  pendingCardTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginBottom: 6 },
-  pendingCardText: { color: '#C7D1ED', fontSize: 14, lineHeight: 20 },
-  pendingBack: { position: 'absolute', top: 18, left: 18, padding: 8 },
-  pendingBackText: { color: '#FFFFFF', fontWeight: '700' },
-  currentLocationHintText: { marginTop: 6, fontSize: 11, color: '#6B7280', textAlign: 'center' },
-  searchSuggestionPanel: { backgroundColor: '#F8FAFA', borderColor: '#E2E8F0', borderWidth: 1, borderRadius: 16, padding: 8, marginBottom: 10, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
-  searchSuggestionItem: { paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, backgroundColor: '#FFFFFF', marginBottom: 8, borderWidth: 1, borderColor: '#E5E7EB' },
-  searchSuggestionText: { color: '#0F172A', fontSize: 14, fontWeight: '700' },
-  cancelButton: { backgroundColor: '#FF3B30', padding: 12, borderRadius: 12, alignItems: 'center', marginTop: 10 },
-  buttonText: { color: 'white', fontWeight: 'bold' },
-  rideCard: { width: 85, padding: 10, backgroundColor: '#fff', marginRight: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E5E5EA' },
-  rideChoiceGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 10 },
-  rideSelectCard: { width: '31%', padding: 10, backgroundColor: '#fff', marginBottom: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E5E5EA' },
-  shareRideCard: { borderColor: '#D9A600', backgroundColor: '#FFF1B8', borderWidth: 2, shadowColor: '#B88900', shadowOpacity: 0.24, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 5 },
-  parcelRideCard: { borderColor: '#1B5E20', backgroundColor: '#EAF8EE', borderWidth: 2, shadowColor: '#1B5E20', shadowOpacity: 0.16, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
-  earnRideCard: { borderColor: '#B45309', backgroundColor: '#FFF3D6', borderWidth: 2, shadowColor: '#B45309', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
-  shareAttractLabel: { position: 'absolute', top: -8, backgroundColor: '#E8B400', color: '#3F2C00', fontSize: 9, fontWeight: '900', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#9A7400' },
-  parcelAttractLabel: { position: 'absolute', top: -8, backgroundColor: '#1B5E20', color: '#FFFFFF', fontSize: 9, fontWeight: '900', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#0E3B13' },
-  earnAttractLabel: { position: 'absolute', top: -8, backgroundColor: '#B45309', color: '#FFFFFF', fontSize: 9, fontWeight: '900', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#7C2D12' },
-  parcelCardHint: { marginTop: 4, color: '#1B5E20', fontSize: 10, fontWeight: '700', textAlign: 'center' },
-  earnCardHint: { marginTop: 4, color: '#9A3412', fontSize: 10, fontWeight: '700', textAlign: 'center' },
-  selected: { borderColor: '#007AFF', backgroundColor: '#F2F7FF', borderWidth: 2 },
-  searchingText: { fontSize: 14, fontWeight: '700', color: '#007AFF', textAlign: 'center' },
-  highlightPrice: { fontSize: 20, fontWeight: '900', color: '#34C759' },
-  routeText: { fontSize: 14, fontWeight: '700', color: '#1C1C1E', marginTop: 2 },
-  otpClearBox: { backgroundColor: '#F2F7FF', padding: 15, borderRadius: 15, borderWidth: 1, borderColor: '#007AFF', alignItems: 'center', width: '100%' },
-  otpValue: { fontSize: 32, fontWeight: '900' },
-  otpLabel: { fontSize: 10, color: '#007AFF', fontWeight: 'bold' },
-  detailsBtn: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, width: '100%', alignItems: 'center', marginTop: 10 },
-  detailsBtnText: { fontWeight: '700' },
-  chatButton: { backgroundColor: '#127A40', padding: 12, borderRadius: 12, width: '100%', alignItems: 'center', marginTop: 10, position: 'relative' },
-  chatButtonText: { color: 'white', fontWeight: '700' },
-  unreadDot: { position: 'absolute', right: 12, top: 8, width: 10, height: 10, borderRadius: 5, backgroundColor: '#D62828' },
-  callBtn: { marginTop: 8, backgroundColor: '#E8F5E9', borderWidth: 1, borderColor: '#1B5E20', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 14 },
-  callBtnText: { color: '#1B5E20', fontWeight: '700' },
-  smallCallBtn: { backgroundColor: '#E8F5E9', borderColor: '#1B5E20', borderWidth: 1, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 6 },
-  smallCallBtnText: { color: '#1B5E20', fontWeight: '700', fontSize: 12 },
-  smallNavBtn: { backgroundColor: '#111827', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 6 },
-  smallNavBtnText: { color: 'white', fontWeight: '700', fontSize: 12 },
-  reachingBtn: { backgroundColor: '#FFF4CC', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 6, borderColor: '#E1B500', borderWidth: 1 },
-  reachingBtnText: { color: '#6B4E00', fontWeight: '800', fontSize: 12 },
-  contactCard: { backgroundColor: '#F4FBF6', borderColor: '#CFE8D5', borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 10 },
-  contactTitle: { fontWeight: '800', marginBottom: 4, color: '#1B5E20' },
-  contactText: { color: '#1F2937' },
-  sharePassengerRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-  logoutMenu: { position: 'absolute', top: 45, right: 0, backgroundColor: 'white', borderRadius: 8, elevation: 10, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, minWidth: 150 },
-  logoutMenuItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#E5E5EA' },
-  logoutMenuText: { fontSize: 14, fontWeight: '600', color: '#FF3B30' },
-  menuItemText: { fontSize: 14, fontWeight: '600', color: '#111827' },
-  journeyQuoteCard: { position: 'absolute', left: 16, right: 16, bottom: 24, backgroundColor: 'rgba(255,255,255,0.96)', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  journeyQuoteText: { fontSize: 16, fontWeight: '800', color: '#111827', textAlign: 'center' },
-  sharePassengerMeta: { color: '#4B5563', fontSize: 12 },
-  shareDriverFlowCard: { backgroundColor: '#FFF6CC', borderColor: '#E8C549', borderWidth: 1, borderRadius: 14, padding: 10, marginBottom: 10, width: '100%' },
-  shareDriverFlowTitle: { color: '#6B4E00', fontWeight: '900', fontSize: 15, marginBottom: 2 },
-  shareDriverFlowSub: { color: '#7A5C00', fontWeight: '700', marginBottom: 8 },
-  shareDriverTaskCard: { width: 170, backgroundColor: '#FFF0A6', borderColor: '#D8B03D', borderWidth: 1, borderRadius: 12, padding: 10, marginRight: 8 },
-  shareDriverTaskCardSelected: { backgroundColor: '#FFD84D', borderColor: '#9F7600' },
-  shareDriverTaskTitle: { color: '#4B3B00', fontWeight: '900', marginBottom: 4 },
-  shareDriverTaskMeta: { color: '#6B5A14', fontSize: 12, marginBottom: 2 },
-  shareDriverActionCard: { backgroundColor: '#FFFBE8', borderColor: '#E8C549', borderWidth: 1, borderRadius: 12, padding: 10 },
-  shareSingleNotifCard: {
-    backgroundColor: '#FFF0A8',
-    borderColor: '#C99C18',
-    borderWidth: 1.5,
-    borderRadius: 12,
-    padding: 10,
-    marginTop: 6,
-    shadowColor: '#7A5C00',
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  shareSingleNotifTitle: { color: '#5E4300', fontWeight: '900', marginBottom: 3 },
-  shareSingleNotifMeta: { color: '#6B5A14', fontSize: 12 },
-  parcelSingleNotifCard: { backgroundColor: '#EAF8EE', borderColor: '#8BC59B', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 6 },
-  parcelSingleNotifTitle: { color: '#1B5E20', fontWeight: '900', marginBottom: 3 },
-  parcelSingleNotifMeta: { color: '#256B31', fontSize: 12 },
-  driverFilterCard: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1', borderWidth: 1, borderRadius: 12, padding: 10, marginTop: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  driverFilterTitle: { color: '#0F172A', fontWeight: '800' },
-  driverFilterHint: { color: '#475569', fontSize: 12, marginTop: 2 },
-  driverPromoFooter: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 18, padding: 14, marginTop: 12, alignItems: 'center', overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB' },
-  driverPromoPulse: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#007AFF', borderRadius: 18 },
-  driverPromoTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
-  driverPromoText: { fontSize: 13, color: '#475569', textAlign: 'center', lineHeight: 18 },
-  driverNotificationsScroll: { maxHeight: 330 },
-  goHomeWrap: { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 12, padding: 10, marginBottom: 10 },
-  goHomeButton: { backgroundColor: '#0F8A47', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
-  goHomeButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 15 },
-  goHomeHintText: { color: '#166534', marginTop: 8, fontWeight: '600' },
-  goHomeQuickHint: { marginTop: 6, color: '#166534', fontSize: 12, fontWeight: '700' },
-  passengerFeatureCard: { marginTop: 10, backgroundColor: '#EEF2FF', borderWidth: 1, borderColor: '#C7D2FE', borderRadius: 12, padding: 10 },
-  passengerFeatureTitle: { color: '#3730A3', fontWeight: '900', marginBottom: 6 },
-  passengerFeatureLine: { color: '#312E81', fontSize: 12, lineHeight: 18, marginBottom: 4 },
-  passengerFeatureGrid: { gap: 8 },
-  passengerFeatureTile: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFFFFF', borderRadius: 10, borderWidth: 1, borderColor: '#C7D2FE', padding: 8 },
-  passengerFeatureTileIcon: { fontSize: 18 },
-  passengerFeatureTileTitle: { color: '#312E81', fontWeight: '800', fontSize: 13 },
-  passengerFeatureTileText: { color: '#4338CA', fontSize: 11, marginTop: 1 },
-  notificationCard: { backgroundColor: '#fff', borderRadius: 15, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#007AFF' },
-  notifHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  accButton: { flex: 2, backgroundColor: '#34C759', padding: 12, borderRadius: 10, alignItems: 'center' },
-  accText: { color: 'white', fontWeight: 'bold' },
-  negButton: { flex: 1, backgroundColor: '#F2F2F7', padding: 12, borderRadius: 10, alignItems: 'center', marginRight: 10 },
-  navButton: { backgroundColor: '#000', padding: 14, borderRadius: 12, marginBottom: 10, alignItems: 'center', width: '100%' },
-  navButtonText: { color: 'white', fontWeight: 'bold' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  detailsModal: { backgroundColor: 'white', padding: 25, borderRadius: 25, width: '90%' },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, textAlign:'center' },
-  detailRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  detailLabel: { color: '#8E8E93' },
-  valText: { flex: 1, textAlign: 'right', fontWeight: '600' },
-  loginContainer: { flex: 1, justifyContent: 'center', padding: 30 },
-  title: { fontSize: 28, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
-  switchAuth: { textAlign: 'center', marginTop: 20, color: '#007AFF' },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
-  emptyText: { textAlign: 'center', color: '#8E8E93', marginVertical: 20 },
-  driverNameText: { fontSize: 18, fontWeight: 'bold' },
-  driverArrivingCard: { width: '100%', alignItems: 'center' },
-  tipOption: { backgroundColor: '#E8F2FF', padding: 12, borderRadius: 10, width: '45%', alignItems: 'center', marginBottom: 5 },
-  tipText: { color: '#007AFF', fontWeight: 'bold' },
-  warningBox: { backgroundColor: '#FFFBE6', borderLeftWidth: 5, borderColor: '#FAAD14', padding: 15, borderRadius: 10, marginBottom: 20, width: '100%' },
-  warningTitle: { fontWeight: '900', color: '#FAAD14', marginBottom: 5 },
-  warningDesc: { fontSize: 13, color: '#595959' },
-  suspensionOverlay: { backgroundColor: 'white', padding: 30, borderRadius: 20, alignItems: 'center', marginTop: 20, width: '90%', elevation: 10 },
-  suspensionEmoji: { fontSize: 60, marginBottom: 10 },
-  suspensionTitle: { fontSize: 22, fontWeight: '900', color: '#FF3B30', textAlign: 'center' },
-  suspensionText: { textAlign: 'center', color: '#3A3A3C', marginVertical: 15 },
-  crewBox: { backgroundColor: '#F2F2F7', padding: 15, borderRadius: 15, width: '100%', borderStyle: 'dashed', borderWidth: 2, borderColor: '#8E8E93' },
-  crewLabel: { fontSize: 10, fontWeight: '900', color: '#8E8E93', textAlign: 'center', marginBottom: 5 },
-  crewInput: { backgroundColor: 'white', padding: 10, borderRadius: 10, textAlign: 'center', marginBottom: 10 },
-  crewBtn: { backgroundColor: '#1C1C1E', padding: 12, borderRadius: 10, alignItems: 'center' },
-  cancelTitle: { fontWeight: 'bold', color: '#FF3B30', marginBottom: 10 },
-  reasonBtn: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 10, marginBottom: 5 },
-  historyCard: { backgroundColor: '#F8F9FB', borderRadius: 12, padding: 10, marginBottom: 8 },
-  historyRoute: { fontWeight: '700', color: '#111827' },
-  historyMeta: { marginTop: 2, color: '#374151' },
-  shareMatchText: { marginTop: 4, color: '#7A5C00', fontWeight: '700', fontSize: 12 },
-  shareNotifLine: { color: '#374151', fontSize: 12, marginTop: 2 },
-  etaCard: { marginTop: 10, width: '100%', backgroundColor: '#FFF8D6', borderColor: '#E7C956', borderWidth: 1, borderRadius: 12, padding: 10, alignItems: 'center' },
-  etaAuto: { fontSize: 24, marginBottom: 4 },
-  etaText: { color: '#6B4E00', fontWeight: '700' },
-  chatWrap: { flex: 1, backgroundColor: '#EAF8EE' },
-  chatHeader: { paddingTop: 56, paddingBottom: 16, paddingHorizontal: 16, backgroundColor: '#0F8A47', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  chatTitle: { color: 'white', fontSize: 20, fontWeight: '800' },
-  chatClose: { color: 'white', fontWeight: '700' },
-  chatTargetsRow: { maxHeight: 50, backgroundColor: '#F7FCF8', borderBottomWidth: 1, borderBottomColor: '#D5EBDD', paddingHorizontal: 8, paddingVertical: 8 },
-  chatTargetBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: '#EAF5EE', marginRight: 8 },
-  chatTargetBtnActive: { backgroundColor: '#0F8A47' },
-  chatTargetText: { color: '#0F8A47', fontWeight: '700' },
-  chatTargetTextActive: { color: 'white' },
-  chatBubble: { maxWidth: '80%', borderRadius: 12, padding: 10, marginBottom: 8 },
-  chatMine: { alignSelf: 'flex-end', backgroundColor: '#CFF2D6' },
-  chatTheirs: { alignSelf: 'flex-start', backgroundColor: 'white' },
-  chatName: { fontSize: 11, color: '#0F8A47', marginBottom: 2, fontWeight: '700' },
-  chatText: { color: '#111827' },
-  chatTargetTag: { marginTop: 4, fontSize: 11, color: '#7A5C00', fontWeight: '700' },
-  chatComposer: { flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#D1D5DB' },
-  chatInput: { flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, marginRight: 8 },
-  chatSend: { backgroundColor: '#0F8A47', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 18 }
-  ,driverMapModalWrap: { flex: 1, backgroundColor: '#FFFFFF' },
-  driverMapModalMap: { flex: 1 },
-  driverMapModalControls: { backgroundColor: 'rgba(255,255,255,0.96)', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 20, borderTopWidth: 1, borderTopColor: '#D1D5DB' },
-  driverMapModalTitle: { fontSize: 16, fontWeight: '900', color: '#0F172A', marginBottom: 4 },
-  driverMapModalHint: { color: '#475569', marginBottom: 10 },
-  disabledConfirmBtn: { backgroundColor: '#86EFAC', opacity: 0.45 }
-  ,yellowTermsCard: { backgroundColor: '#FFF6CC', borderWidth: 1, borderColor: '#E8C549', borderRadius: 14, padding: 12, marginBottom: 14 },
-  termsHeading: { color: '#6B4E00', fontWeight: '900', marginBottom: 8 },
-  termsPoint: { color: '#5B4A17', marginBottom: 5, lineHeight: 18 },
-  parcelTermsCard: { backgroundColor: '#EAF8EE', borderWidth: 1, borderColor: '#9AD7B0', borderRadius: 14, padding: 12, marginBottom: 14 },
-  parcelTermsHeading: { color: '#1B5E20', fontWeight: '900', marginBottom: 8 }
-  ,earnPageWrap: { flex: 1, backgroundColor: '#F8FAFC' },
-  earnPageHeader: { paddingTop: 54, paddingHorizontal: 16, paddingBottom: 14, backgroundColor: 'white', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  earnPageBack: { color: '#007AFF', fontWeight: '700' },
-  earnPageTitle: { fontSize: 20, fontWeight: '900', color: '#111827' },
-  earnPageContent: { padding: 16, paddingBottom: 120 },
-  earnSummaryCard: { backgroundColor: '#FFF3D6', borderWidth: 1, borderColor: '#F59E0B', borderRadius: 14, padding: 14, marginBottom: 14 },
-  earnSummaryLabel: { color: '#92400E', fontWeight: '700' },
-  earnSummaryValue: { color: '#B45309', fontWeight: '900', fontSize: 28, marginTop: 4 },
-  earnSummaryHint: { color: '#7C2D12', marginTop: 6, lineHeight: 18 },
-  earnSectionTitle: { fontSize: 16, fontWeight: '800', color: '#111827', marginTop: 8, marginBottom: 8 },
-  earnFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#E5E7EB' }
-  ,shareAutoScreen: { flex: 1, backgroundColor: '#FFF6CC', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  shareAutoTopGlow: { position: 'absolute', top: -60, width: 220, height: 220, borderRadius: 110, backgroundColor: 'rgba(255, 220, 77, 0.35)' },
-  shareAutoBadge: { backgroundColor: '#FFF0A6', color: '#7A5C00', fontWeight: '800', paddingVertical: 6, paddingHorizontal: 14, borderRadius: 999, marginBottom: 18, overflow: 'hidden' },
-  shareAutoOrb: { width: 150, height: 150, borderRadius: 75, backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#B38F00', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, marginBottom: 22 },
-  shareAutoOrbIcon: { fontSize: 56 },
-  shareAutoTitle: { fontSize: 24, fontWeight: '900', color: '#4B3B00', textAlign: 'center', marginBottom: 10 },
-  shareAutoSubtitle: { fontSize: 15, color: '#6B5A14', textAlign: 'center', lineHeight: 22, marginBottom: 18 },
-  shareAutoTimerCard: { width: '100%', backgroundColor: 'rgba(255,255,255,0.72)', borderRadius: 22, padding: 18, alignItems: 'center', marginBottom: 16, borderWidth: 1, borderColor: '#F2D35E' },
-  shareAutoTimerLabel: { color: '#8A6A00', fontWeight: '700', marginBottom: 4 },
-  shareAutoTimerValue: { fontSize: 42, fontWeight: '900', color: '#D89B00' },
-  shareAutoTimerHint: { color: '#7A5C00', marginTop: 6, fontWeight: '600' },
-  shareAutoSetupHint: { color: '#8A6A00', marginTop: 8, fontSize: 12, fontWeight: '700' },
-  shareAutoFoundHint: { color: '#6B4E00', marginTop: 8, fontSize: 13, fontWeight: '900' },
-  shareAutoSorryText: { color: '#A43412', marginTop: 8, fontSize: 13, fontWeight: '800' },
-  shareAutoDotsRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
-  shareAutoDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#D89B00', marginHorizontal: 6 },
-  shareAutoGameBtn: { backgroundColor: '#0F8A47', paddingVertical: 12, paddingHorizontal: 18, borderRadius: 14, marginBottom: 10 },
-  shareAutoGameBtnText: { color: 'white', fontWeight: '800' },
-  shareAutoCancelBtn: { backgroundColor: '#1F2937', paddingVertical: 14, paddingHorizontal: 22, borderRadius: 16 },
-  shareAutoCancelText: { color: '#FFF', fontWeight: '800' }
-  ,gameWrap: { flex: 1, backgroundColor: '#FEF8E7', padding: 18 },
-  gameHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 40, marginBottom: 10 },
-  gameTitle: { fontSize: 24, fontWeight: '900', color: '#4B3B00' },
-  gameClose: { color: '#0F8A47', fontWeight: '800' },
-  gameMeta: { color: '#6B4E00', fontWeight: '800', marginBottom: 8 },
-  gameHint: { color: '#7A5C00', marginBottom: 10 },
-  gamePauseHint: { color: '#A43412', marginBottom: 10, fontWeight: '700' },
-  gameArena: { flex: 1, backgroundColor: '#d5c4ff', borderWidth: 1, borderColor: '#E8C549', borderRadius: 18, marginTop: 12, position: 'relative', overflow: 'hidden' },
-  gameFloatingTarget: { position: 'absolute', transform: [{ translateX: -18 }, { translateY: -18 }], width: 52, height: 52, borderRadius: 26, backgroundColor: '#FFD84D', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#B88900' },
-  gameZombieTarget: { backgroundColor: '#FFD6D6', borderColor: '#A43412' },
-  gameTargetText: { fontSize: 28 },
-  profileScreenWrap: { flex: 1, backgroundColor: '#0C4A6E' },
-  profileScreenHeader: { paddingTop: 54, paddingHorizontal: 18, paddingBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#0369A1' },
-  profileScreenTitle: { color: 'white', fontWeight: '900', fontSize: 20 },
-  profileScreenClose: { color: '#E0F2FE', fontWeight: '700' },
-  profileScreenContent: { padding: 14, paddingBottom: 120 },
-  profileCard: { backgroundColor: '#F0F9FF', borderRadius: 16, borderWidth: 1, borderColor: '#BAE6FD', padding: 14, marginBottom: 12 },
-  profileCardTitle: { color: '#0C4A6E', fontWeight: '900', marginBottom: 8, fontSize: 15 },
-  profileLabel: { color: '#0369A1', fontWeight: '700', marginBottom: 6 },
-  profileInput: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#7DD3FC', borderRadius: 10, padding: 11 },
-  profileValue: { color: '#0F172A', fontWeight: '600' },
-  profileWalletValue: { color: '#0E7490', fontSize: 24, fontWeight: '900' },
-  profileHistoryMeta: { color: '#0F766E', marginBottom: 8, fontWeight: '700' },
-  profileHistoryRow: { backgroundColor: '#ECFEFF', borderWidth: 1, borderColor: '#A5F3FC', borderRadius: 10, padding: 10, marginBottom: 8 },
-  profileHistoryRoute: { color: '#155E75', fontWeight: '700' },
-  profileHistoryStatus: { color: '#0F766E', marginTop: 2 },
-  goHomeVehiclePageWrap: { flex: 1, backgroundColor: '#F8FAFC' },
-  goHomeVehicleHeader: { paddingTop: 54, paddingHorizontal: 16, paddingBottom: 14, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  goHomeVehicleTitle: { fontSize: 22, fontWeight: '900', color: '#0F172A' },
-  goHomeVehicleClose: { color: '#334155', fontWeight: '700' },
-  goHomeVehicleBody: { padding: 16, flex: 1 },
-  goHomeVehicleSub: { color: '#475569', marginBottom: 4, fontWeight: '700' },
-  goHomeVehicleRoute: { color: '#0F172A', marginBottom: 14, fontWeight: '700' },
-  goHomeVehicleGrid: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 },
-  goHomeVehicleCard: { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
-  goHomeVehicleIcon: { fontSize: 30, marginBottom: 6 },
-  goHomeVehicleName: { color: '#1E293B', fontWeight: '800' },
-  goHomeVehicleFare: { color: '#0F766E', fontWeight: '800', marginTop: 2 },
-  rideGameWrap: { flex: 1, backgroundColor: '#0B3A5B' },
-  rideGameHeader: { paddingTop: 52, paddingHorizontal: 14, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#0C4A6E' },
-  rideGameHeaderBtn: { color: '#E0F2FE', fontWeight: '800' },
-  rideGameTitle: { color: '#F8FAFC', fontSize: 19, fontWeight: '900' },
-  rideCongratsCard: { margin: 14, backgroundColor: '#ECFEFF', borderRadius: 18, borderWidth: 1, borderColor: '#67E8F9', padding: 14, alignItems: 'center' },
-  rideCongratsTitle: { color: '#0C4A6E', fontWeight: '900', fontSize: 22 },
-  rideCongratsSub: { color: '#155E75', marginTop: 4, textAlign: 'center', fontWeight: '700' },
-  rideSparkle: { fontSize: 28, marginTop: 6 },
-  rideTrackCard: { marginHorizontal: 14, backgroundColor: '#F8FAFC', borderRadius: 18, borderWidth: 1, borderColor: '#CBD5E1', padding: 14 },
-  rideTrackLabel: { color: '#0F172A', fontWeight: '800' },
-  rideProgressBarBg: { marginTop: 8, height: 12, backgroundColor: '#DBEAFE', borderRadius: 999, overflow: 'hidden' },
-  rideProgressBarFill: { height: '100%', backgroundColor: '#2563EB' },
-  rideTrackMeta: { marginTop: 8, color: '#475569', fontWeight: '700' },
-  rideRoadArea: { marginTop: 12, height: 130, backgroundColor: '#111827', borderRadius: 14, position: 'relative', overflow: 'hidden' },
-  rideRoadStripe: { position: 'absolute', top: 0, bottom: 0, left: '50%', width: 4, marginLeft: -2, backgroundColor: '#FCD34D' },
-  rideAutoIcon: { position: 'absolute', bottom: 10, marginLeft: -16, fontSize: 34 },
-  rideControlRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  rideControlBtn: { flex: 1, backgroundColor: '#1E3A8A', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
-  disabledControlBtn: { opacity: 0.35 },
-  rideControlText: { color: '#FFFFFF', fontWeight: '800' },
-  rideLivesText: { color: '#0F172A', fontWeight: '800', marginTop: 10 },
-  rideGameHint: { color: '#334155', marginTop: 6, fontSize: 13 },
-  rideObstacle: { position: 'absolute', width: 28, height: 28, borderRadius: 8, backgroundColor: '#EF4444', justifyContent: 'center', alignItems: 'center' },
-  rideObstacleText: { fontSize: 16 },
-  rideCrashText: { color: '#B91C1C', fontWeight: '800', marginTop: 10, textAlign: 'center' },
-  rideFinishedText: { color: '#15803D', fontWeight: '800', marginTop: 10, textAlign: 'center' },
-  rideGameBottomActions: { marginTop: 12, marginHorizontal: 14, paddingBottom: 20 },
-  // EARNINGS PAGE STYLES
-  earningsCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },
-  earningsDate: { fontSize: 14, fontWeight: '700', color: '#1F2937' },
-  earningsAmount: { fontSize: 16, fontWeight: '900', color: '#059669' },
-  totalEarningsCard: { backgroundColor: '#F0FDF4', borderWidth: 2, borderColor: '#22C55E', borderRadius: 14, padding: 14, alignItems: 'center', marginTop: 10 },
-  totalEarningsLabel: { fontSize: 13, fontWeight: '700', color: '#16A34A', marginBottom: 4 },
-  totalEarningsAmount: { fontSize: 28, fontWeight: '900', color: '#16A34A' },
-  // RATING STYLES
-  ratingSubtitle: { fontSize: 14, color: '#6B7280', marginBottom: 16, textAlign: 'center', fontWeight: '600' },
-  starsContainer: { flexDirection: 'row', justifyContent: 'center', gap: 10, marginBottom: 16, marginTop: 10 },
-  starButton: { padding: 8 },
-  star: { fontWeight: '900' },
-  ratingHint: { fontSize: 12, color: '#9CA3AF', textAlign: 'center', marginBottom: 16, fontWeight: '600' },
-  ratingButtonRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  ratingButton: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  ratingButtonText: { color: 'white', fontWeight: '700', fontSize: 14 }
-});
