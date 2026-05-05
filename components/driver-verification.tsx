@@ -52,9 +52,11 @@ export async function saveDriverRecord(payload: {
   const existing = await getDoc(docRef);
   if (existing.exists()) {
     const existingData = existing.data();
-    const error = new Error(existingData?.isVerified ? 'This number is already verified.' : 'A verification request for this number is already pending.');
-    (error as Error & { code?: string }).code = 'driver-already-submitted';
-    throw error;
+    if (existingData?.isVerified) {
+      const error = new Error('This number is already verified.');
+      (error as Error & { code?: string }).code = 'driver-already-submitted';
+      throw error;
+    }
   }
 
   await setDoc(docRef, {
@@ -64,6 +66,7 @@ export async function saveDriverRecord(payload: {
     rcImageUrl: payload.rcImageUrl,
     licenseImageUrl: payload.licenseImageUrl,
     isVerified: false,
+    subscriptionActive: false,
     createdAt: serverTimestamp(),
   });
   return docRef.id;

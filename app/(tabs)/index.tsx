@@ -6,37 +6,38 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-  getAuth, onAuthStateChanged,
-  PhoneAuthProvider, signInWithCredential,
-  signOut
+    getAuth, onAuthStateChanged,
+    PhoneAuthProvider, signInWithCredential,
+    signOut
 } from 'firebase/auth';
 import {
-  addDoc, arrayUnion, collection,
-  deleteDoc,
-  deleteField,
-  doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
+    addDoc, arrayUnion, collection,
+    deleteDoc,
+    deleteField,
+    doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Animated,
-  Dimensions,
-  FlatList,
-  Image,
-  Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
-  StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
+    Alert,
+    Animated,
+    Dimensions,
+    FlatList,
+    Image,
+    Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
+    StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
-import DriverVerificationButtons, { startDriverVerificationListener } from '../../components/driver-verification';
+import { WebView } from 'react-native-webview';
+import DriverVerificationButtons from '../../components/driver-verification';
 import {
-  FARE_ADJUSTMENTS,
-  PricingDemandLevel,
-  PricingRideType,
-  SHARE_AUTO_FARE_SETTINGS,
-  SURGE_SETTINGS,
-  VEHICLE_DISTANCE_SLABS,
-  VEHICLE_FARE_SETTINGS,
+    FARE_ADJUSTMENTS,
+    PricingDemandLevel,
+    PricingRideType,
+    SHARE_AUTO_FARE_SETTINGS,
+    SURGE_SETTINGS,
+    VEHICLE_DISTANCE_SLABS,
+    VEHICLE_FARE_SETTINGS,
 } from '../../lib/fare-settings';
 
 /* ================= FIREBASE CONFIG ================= */
@@ -59,15 +60,17 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const CURRENT_LOC_FAB_RISE = Math.round(Dimensions.get('window').height * 0.1);
 const ACTIVE_RIDE_BUTTON_WIDTH = 140;
 const ACTIVE_RIDE_BUTTON_HEIGHT = 48;
+const DRIVER_SUBSCRIPTION_AMOUNT = 10;
+const DRIVER_SUBSCRIPTION_DAYS = 28;
+const RAZORPAY_KEY_ID = 'rzp_test_SlamQeH59EZ2yd';
 const EARN_REWARD_AMOUNT = 5;
 
 type RideType = 'Bike' | 'Auto' | 'Cab' | 'ShareAuto' | 'Parcel';
 type DriverVehicleType = 'Bike' | 'Cycle' | 'Auto' | 'Cab';
 type Coord = { latitude: number; longitude: number };
-
 interface Ride {
   id?: string; type: RideType;
-  fare: number; baseFare: number; tip: number; 
+  fare: number; baseFare: number; tip: number;
   distance: number; pickup: Coord; drop: Coord; encryptedOTP: string;
   acceptedAtMs?: number;
   pickupReachMinutes?: number;
@@ -560,8 +563,16 @@ function RideAppScreen() {
   const [isIdentitySet, setIsIdentitySet] = useState(false);
   const [driverDocId, setDriverDocId] = useState<string | null>(null);
   const [driverVerified, setDriverVerified] = useState(false);
+  const [driverSubscriptionActive, setDriverSubscriptionActive] = useState(false);
+  const [driverSubscriptionExpiresAt, setDriverSubscriptionExpiresAt] = useState<Timestamp | null>(null);
+  const [driverHasPaymentHistory, setDriverHasPaymentHistory] = useState(false);
   const [showDriverVerification, setShowDriverVerification] = useState(false);
   const [waitingForVerification, setWaitingForVerification] = useState(false);
+  const [showDriverPaymentModal, setShowDriverPaymentModal] = useState(false);
+  const [driverPaymentProcessing, setDriverPaymentProcessing] = useState(false);
+  const [driverPaymentError, setDriverPaymentError] = useState('');
+  const [driverCheckoutHtml, setDriverCheckoutHtml] = useState('');
+  const [showDriverCheckout, setShowDriverCheckout] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [profilePhone, setProfilePhone] = useState('');
   const [profileEarnWallet, setProfileEarnWallet] = useState(0);
@@ -604,6 +615,84 @@ function RideAppScreen() {
   const [verificationSent, setVerificationSent] = useState(false);
   const [bookingValidation, setBookingValidation] = useState<{ visible: boolean; title?: string; message?: string }>({ visible: false });
   const recaptchaVerifier = useRef<any | null>(null);
+  const driverSubscriptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const postDriverCheckoutMessage = (message: string) => {
+    (window as any).ReactNativeWebView?.postMessage(message);
+  };
+
+  const buildDriverCheckoutHtml = useCallback((amountInRupees: number) => {
+    const options = {
+      key: RAZORPAY_KEY_ID,
+      amount: amountInRupees * 100,
+      currency: 'INR',
+      name: 'RideApp Driver Pass',
+      description: '28-day driver subscription',
+      prefill: {
+        name: driverName || profileName || 'Driver',
+        contact: driverPhone || profilePhone || '',
+      },
+      theme: { color: '#0B1020' },
+      modal: {
+        ondismiss: function () {
+          (window as any).ReactNativeWebView?.postMessage(JSON.stringify({ type: 'dismiss' }));
+        },
+      },
+      handler: function (response: any) {
+        (window as any).ReactNativeWebView?.postMessage(JSON.stringify({ type: 'success', payload: response }));
+      },
+    };
+
+    return `
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+          <style>
+            body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(180deg, #07111F 0%, #0B1020 100%); color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+            .card { width: calc(100% - 32px); max-width: 420px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 28px; padding: 24px; box-sizing: border-box; box-shadow: 0 18px 60px rgba(0,0,0,0.32); }
+            .eyebrow { display: inline-block; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: #B7C7FF; margin-bottom: 12px; }
+            h1 { margin: 0 0 10px; font-size: 28px; line-height: 1.15; }
+            p { margin: 0; color: #D4DAF0; line-height: 1.6; font-size: 14px; }
+            .price { margin: 18px 0 6px; font-size: 42px; font-weight: 900; }
+            .meta { color: #B8C6E6; font-size: 13px; margin-bottom: 18px; }
+            .button { background: #FFFFFF; color: #08111F; border-radius: 16px; padding: 14px 18px; text-align: center; font-weight: 800; }
+          </style>
+          <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+        </head>
+        <body>
+          <div class="card">
+            <div class="eyebrow">Driver access approved</div>
+            <h1>Pay to unlock driver features</h1>
+            <p>Your documents are verified. Complete this one-time payment to activate ride notifications and driver tools for 28 days.</p>
+            <div class="price">₹${amountInRupees}</div>
+            <div class="meta">Single payment • ${DRIVER_SUBSCRIPTION_DAYS} days access</div>
+            <div class="button">Opening secure checkout...</div>
+          </div>
+          <script>
+            (function() {
+              var options = ${JSON.stringify(options)};
+              options.handler = function(response) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'success', payload: response }));
+              };
+              options.modal = {
+                ondismiss: function () {
+                  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'dismiss' }));
+                }
+              };
+              var rzp = new Razorpay(options);
+              setTimeout(function() {
+                try {
+                  rzp.open();
+                } catch (error) {
+                  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', message: error && error.message ? error.message : 'Unable to open payment checkout.' }));
+                }
+              }, 600);
+            })();
+          </script>
+        </body>
+      </html>
+    `;
+  }, [driverName, driverPhone, profileName, profilePhone]);
 
   useEffect(() => {
     (async () => {
@@ -621,13 +710,147 @@ function RideAppScreen() {
 
   useEffect(() => {
     if (!driverDocId) return;
-    const unsub = startDriverVerificationListener(driverDocId, () => {
-      setDriverVerified(true);
+    const docRef = doc(db, 'drivers', driverDocId);
+    const unsub = onSnapshot(docRef, async (snapshot) => {
+      const data = snapshot.data();
+      const isVerified = !!data?.isVerified;
+      const hasPaymentHistory = !!data?.subscriptionPaidAt || !!data?.subscriptionPaymentId || !!data?.subscriptionExpiresAt;
+      const subscriptionExpiresAt = data?.subscriptionExpiresAt ?? null;
+      const subscriptionExpiresAtMs = subscriptionExpiresAt?.toMillis?.() ?? 0;
+      const isSubscriptionActive = isVerified && data?.subscriptionActive === true && subscriptionExpiresAtMs > Date.now();
+
+      setDriverVerified(isVerified);
+      setDriverHasPaymentHistory(hasPaymentHistory);
+      setDriverSubscriptionExpiresAt(subscriptionExpiresAt);
+      setDriverSubscriptionActive(isSubscriptionActive);
+
+      if (driverSubscriptionTimerRef.current) {
+        clearTimeout(driverSubscriptionTimerRef.current);
+        driverSubscriptionTimerRef.current = null;
+      }
+
+      if (!isVerified) {
+        setWaitingForVerification(false);
+        setShowDriverVerification(false);
+        setShowDriverPaymentModal(hasPaymentHistory);
+        setDriverPaymentError('');
+        setDriverSubscriptionActive(false);
+        if (!hasPaymentHistory) {
+          setDriverSubscriptionExpiresAt(null);
+        }
+        setIsIdentitySet(false);
+        return;
+      }
+
       setWaitingForVerification(false);
       setShowDriverVerification(false);
+
+      if (!isSubscriptionActive) {
+        setIsIdentitySet(false);
+        setShowDriverPaymentModal(true);
+        setDriverPaymentError('');
+
+        if (subscriptionExpiresAtMs > 0 && subscriptionExpiresAtMs <= Date.now() && data?.subscriptionActive === true) {
+          updateDoc(docRef, {
+            subscriptionActive: false,
+            subscriptionStatus: 'expired',
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      setShowDriverPaymentModal(false);
+      setDriverPaymentError('');
       setIsIdentitySet(true);
+
+      const remainingMs = subscriptionExpiresAtMs - Date.now();
+      if (remainingMs > 0) {
+        driverSubscriptionTimerRef.current = setTimeout(() => {
+          setDriverSubscriptionActive(false);
+          setIsIdentitySet(false);
+          setShowDriverPaymentModal(true);
+        }, remainingMs);
+      }
     });
-    return () => unsub();
+    return () => {
+      unsub();
+      if (driverSubscriptionTimerRef.current) {
+        clearTimeout(driverSubscriptionTimerRef.current);
+        driverSubscriptionTimerRef.current = null;
+      }
+    };
+  }, [driverDocId]);
+
+  const handleDriverSubscriptionPayment = async () => {
+    if (!driverDocId) {
+      Alert.alert('Verification required', 'Please submit and approve your driver documents first.');
+      return;
+    }
+
+    if (driverPaymentProcessing) return;
+
+    try {
+      setDriverPaymentProcessing(true);
+      setDriverPaymentError('');
+      setDriverCheckoutHtml(buildDriverCheckoutHtml(DRIVER_SUBSCRIPTION_AMOUNT));
+      setShowDriverCheckout(true);
+    } catch (err: any) {
+      const message = err?.description || err?.message || 'Payment could not be completed. Please try again.';
+      setDriverPaymentError(message);
+      Alert.alert('Payment failed', message);
+      setDriverPaymentProcessing(false);
+    } finally {
+    }
+  };
+
+  const handleDriverCheckoutMessage = useCallback(async (event: any) => {
+    try {
+      const payload = JSON.parse(event.nativeEvent.data);
+
+      if (payload?.type === 'success') {
+        const expiresAt = Timestamp.fromDate(new Date(Date.now() + DRIVER_SUBSCRIPTION_DAYS * 24 * 60 * 60 * 1000));
+
+        if (driverDocId) {
+          await updateDoc(doc(db, 'drivers', driverDocId), {
+            subscriptionActive: true,
+            subscriptionStatus: 'active',
+            subscriptionAmount: DRIVER_SUBSCRIPTION_AMOUNT,
+            subscriptionDays: DRIVER_SUBSCRIPTION_DAYS,
+            subscriptionPaidAt: Timestamp.now(),
+            subscriptionExpiresAt: expiresAt,
+            subscriptionPaymentId: payload?.payload?.razorpay_payment_id ?? '',
+            subscriptionOrderId: payload?.payload?.razorpay_order_id ?? '',
+            subscriptionSignature: payload?.payload?.razorpay_signature ?? '',
+          });
+        }
+
+        setDriverSubscriptionActive(true);
+        setDriverSubscriptionExpiresAt(expiresAt);
+        setShowDriverCheckout(false);
+        setShowDriverPaymentModal(false);
+        setIsIdentitySet(true);
+        setDriverPaymentProcessing(false);
+        Alert.alert('Subscription active', 'Your driver access is unlocked for 28 days.');
+        return;
+      }
+
+      if (payload?.type === 'dismiss') {
+        setShowDriverCheckout(false);
+        setDriverPaymentProcessing(false);
+        return;
+      }
+
+      if (payload?.type === 'error') {
+        setShowDriverCheckout(false);
+        setDriverPaymentProcessing(false);
+        setDriverPaymentError(payload?.message || 'Unable to open payment checkout.');
+        Alert.alert('Payment failed', payload?.message || 'Unable to open payment checkout.');
+      }
+    } catch {
+      setShowDriverCheckout(false);
+      setDriverPaymentProcessing(false);
+      setDriverPaymentError('Payment checkout returned an invalid response.');
+    }
   }, [driverDocId]);
 
   const handleSendOtp = async () => {
@@ -5054,12 +5277,39 @@ function RideAppScreen() {
             ) : !isIdentitySet ? (
                 <View style={{padding: 10}}>
                     <Text style={styles.sectionTitle}>Identity Setup</Text>
-                    {waitingForVerification ? (
-                      <View style={{padding: 20, alignItems: 'center'}}>
-                        <Text style={{fontSize: 20, fontWeight: '700', marginBottom: 10}}>Verification pending</Text>
-                        <Text style={{textAlign: 'center', color: '#444'}}>Your request is pending for approval.</Text>
-                        <Text style={{textAlign: 'center', color: '#444', marginTop: 6}}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
-                        <Text style={{marginTop: 12, color: '#666'}}>You will be able to access driver features once your documents are verified.</Text>
+                    {(waitingForVerification || (driverDocId && !driverVerified && !showDriverVerification)) ? (
+                      <View style={styles.pendingReviewPage}>
+                        <View style={styles.pendingReviewBadgeRow}>
+                          <Text style={styles.pendingReviewBadge}>Under review</Text>
+                        </View>
+                        <Text style={styles.pendingReviewTitle}>
+                          {waitingForVerification ? 'Your documents are being reviewed' : 'Driver access is paused'}
+                        </Text>
+                        <Text style={styles.pendingReviewText}>
+                          {waitingForVerification
+                            ? 'Thanks for submitting your RC and driving licence. Our team is reviewing your request manually.'
+                            : 'Your driver approval was turned off in Firestore. Please submit documents again to request access.'}
+                        </Text>
+                        <View style={styles.pendingReviewCard}>
+                          <Text style={styles.pendingReviewCardTitle}>What happens next</Text>
+                          <Text style={styles.pendingReviewCardText}>1. We verify your documents.</Text>
+                          <Text style={styles.pendingReviewCardText}>2. Once approved, the payment page opens automatically.</Text>
+                          <Text style={styles.pendingReviewCardText}>3. After payment, driver notifications and ride tools unlock for 28 days.</Text>
+                        </View>
+                        <View style={styles.pendingReviewFooter}>
+                          <Text style={styles.pendingReviewFooterText}>This page stays until approval changes to true.</Text>
+                        </View>
+                        {!waitingForVerification && (
+                          <Pressable
+                            style={styles.pendingReviewActionButton}
+                            onPress={() => {
+                              setShowDriverVerification(true);
+                              setDriverPaymentError('');
+                            }}
+                          >
+                            <Text style={styles.pendingReviewActionButtonText}>Resubmit documents</Text>
+                          </Pressable>
+                        )}
                       </View>
                     ) : showDriverVerification ? (
                       <View />
@@ -5087,12 +5337,17 @@ function RideAppScreen() {
                               <Pressable style={styles.pendingBack} onPress={() => { setShowDriverVerification(false); setMode('USER'); }}>
                                 <Text style={styles.pendingBackText}>← Back to passenger</Text>
                               </Pressable>
-                              <Text style={styles.pendingBadge}>Submitted</Text>
-                              <Text style={styles.pendingTitle}>Your request is pending for approval</Text>
-                              <Text style={styles.pendingText}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
+                              <Text style={styles.pendingBadge}>Under review</Text>
+                              <Text style={styles.pendingTitle}>Your documents are already submitted</Text>
+                              <Text style={styles.pendingText}>There is nothing to upload again. Our team is reviewing your RC and driving licence manually.</Text>
                               <View style={styles.pendingCard}>
                                 <Text style={styles.pendingCardTitle}>What happens next</Text>
-                                <Text style={styles.pendingCardText}>We review your RC and driving licence manually. Once approved, driver access is unlocked automatically.</Text>
+                                <Text style={styles.pendingCardText}>1. We review your documents.</Text>
+                                <Text style={styles.pendingCardText}>2. If approved, the payment screen appears automatically.</Text>
+                                <Text style={styles.pendingCardText}>3. Pay ₹10 to activate driver access for 28 days.</Text>
+                              </View>
+                              <View style={styles.pendingReviewFooter}>
+                                <Text style={styles.pendingReviewFooterText}>No documents need to be uploaded again.</Text>
                               </View>
                             </View>
                           ) : (
@@ -5111,6 +5366,100 @@ function RideAppScreen() {
                               }}
                             />
                           )}
+                        </View>
+                      </Modal>
+                    )}
+
+                    {showDriverPaymentModal && !driverSubscriptionActive && (driverVerified || driverHasPaymentHistory) && (
+                      <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={() => {}}>
+                        <View style={styles.subscriptionModal}>
+                          <ScrollView contentContainerStyle={styles.subscriptionScroll} showsVerticalScrollIndicator={false}>
+                            <View style={styles.subscriptionHero}>
+                              <Text style={styles.subscriptionBadge}>{driverHasPaymentHistory && !driverVerified ? 'Reactivate driver access' : 'Driver access approved'}</Text>
+                              <Text style={styles.subscriptionTitle}>{driverHasPaymentHistory && !driverVerified ? 'Pay to restore your driver pass' : 'Activate your 28-day driver pass'}</Text>
+                              <Text style={styles.subscriptionSubtitle}>
+                                {driverHasPaymentHistory && !driverVerified
+                                  ? 'Your documents are already on file. You do not need to upload them again. Pay ₹10 to restore driver access.'
+                                  : 'Your documents are verified. Pay once to unlock ride notifications, ride acceptance, and driver tools for the next 28 days.'}
+                              </Text>
+                            </View>
+
+                            <View style={styles.subscriptionPriceCard}>
+                              <Text style={styles.subscriptionPriceLabel}>Today&apos;s payment</Text>
+                              <Text style={styles.subscriptionPriceValue}>₹{DRIVER_SUBSCRIPTION_AMOUNT}</Text>
+                              <Text style={styles.subscriptionPriceMeta}>Single payment • {DRIVER_SUBSCRIPTION_DAYS} days access</Text>
+                            </View>
+
+                            <View style={styles.subscriptionFeatureCard}>
+                              <Text style={styles.subscriptionFeatureTitle}>What you unlock</Text>
+                              <Text style={styles.subscriptionFeatureLine}>• Live ride notifications for nearby bookings</Text>
+                              <Text style={styles.subscriptionFeatureLine}>• Ride acceptance and driver tools</Text>
+                              <Text style={styles.subscriptionFeatureLine}>• Access remains active for 28 days from payment</Text>
+                              <Text style={styles.subscriptionFeatureLine}>• If your approval is turned off later, access pauses until it is restored</Text>
+                              <Text style={styles.subscriptionFeatureLine}>• No document upload is needed for reactivation</Text>
+                            </View>
+
+                            {!!driverSubscriptionExpiresAt && (
+                              <View style={styles.subscriptionNoticeCard}>
+                                <Text style={styles.subscriptionNoticeTitle}>Subscription status</Text>
+                                <Text style={styles.subscriptionNoticeText}>
+                                  {driverSubscriptionActive ? 'Active now' : 'Payment required'}
+                                </Text>
+                              </View>
+                            )}
+
+                            {!!driverPaymentError && (
+                              <View style={styles.subscriptionErrorCard}>
+                                <Text style={styles.subscriptionErrorText}>{driverPaymentError}</Text>
+                              </View>
+                            )}
+
+                            <Pressable
+                              style={[styles.subscriptionPayButton, driverPaymentProcessing && { opacity: 0.7 }]}
+                              onPress={handleDriverSubscriptionPayment}
+                              disabled={driverPaymentProcessing}
+                            >
+                              <Text style={styles.subscriptionPayButtonText}>
+                                {driverPaymentProcessing ? 'Opening payment...' : `Pay ₹${DRIVER_SUBSCRIPTION_AMOUNT} now`}
+                              </Text>
+                            </Pressable>
+
+                            <Text style={styles.subscriptionFootnote}>
+                              Payment is required before the app unlocks driver notifications and acceptance controls.
+                            </Text>
+                          </ScrollView>
+                        </View>
+                      </Modal>
+                    )}
+
+                    {showDriverCheckout && (
+                      <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={() => { setShowDriverCheckout(false); setDriverPaymentProcessing(false); }}>
+                        <View style={styles.checkoutModalWrap}>
+                          <View style={styles.checkoutHeader}>
+                            <View>
+                              <Text style={styles.checkoutTitle}>Secure payment</Text>
+                              <Text style={styles.checkoutSubtitle}>Complete the ₹10 driver subscription.</Text>
+                            </View>
+                            <Pressable
+                              onPress={() => {
+                                setShowDriverCheckout(false);
+                                setDriverPaymentProcessing(false);
+                              }}
+                            >
+                              <Text style={styles.checkoutClose}>Close</Text>
+                            </Pressable>
+                          </View>
+                          <View style={styles.checkoutWebviewShell}>
+                            <WebView
+                              source={{ html: driverCheckoutHtml }}
+                              onMessage={handleDriverCheckoutMessage}
+                              javaScriptEnabled
+                              domStorageEnabled
+                              originWhitelist={['*']}
+                              startInLoadingState
+                              style={styles.checkoutWebview}
+                            />
+                          </View>
                         </View>
                       </Modal>
                     )}
@@ -6560,6 +6909,46 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
   primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
   verificationModal: { flex: 1, backgroundColor: '#0B1020' },
+  subscriptionModal: { flex: 1, backgroundColor: '#07111F' },
+  subscriptionScroll: { paddingHorizontal: 24, paddingTop: 72, paddingBottom: 36 },
+  subscriptionHero: { marginBottom: 18 },
+  subscriptionBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.08)', color: '#DCE7FF', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', marginBottom: 14, letterSpacing: 0.4 },
+  subscriptionTitle: { color: '#FFFFFF', fontSize: 30, fontWeight: '900', lineHeight: 36, marginBottom: 10 },
+  subscriptionSubtitle: { color: '#C9D5F2', fontSize: 15, lineHeight: 22 },
+  subscriptionPriceCard: { backgroundColor: '#0F1A31', borderRadius: 24, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginBottom: 14 },
+  subscriptionPriceLabel: { color: '#9DB0DB', textTransform: 'uppercase', letterSpacing: 1, fontSize: 11, fontWeight: '700', marginBottom: 4 },
+  subscriptionPriceValue: { color: '#FFFFFF', fontSize: 40, fontWeight: '900', lineHeight: 44 },
+  subscriptionPriceMeta: { color: '#B8C6E6', fontSize: 13, marginTop: 6 },
+  subscriptionFeatureCard: { backgroundColor: '#F7F9FF', borderRadius: 24, padding: 18, marginBottom: 14, borderWidth: 1, borderColor: '#DEE6FF' },
+  subscriptionFeatureTitle: { color: '#0F172A', fontSize: 17, fontWeight: '900', marginBottom: 10 },
+  subscriptionFeatureLine: { color: '#334155', fontSize: 14, lineHeight: 21, marginBottom: 6 },
+  subscriptionNoticeCard: { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginBottom: 14 },
+  subscriptionNoticeTitle: { color: '#DCE7FF', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 },
+  subscriptionNoticeText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  subscriptionErrorCard: { backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: 16, padding: 12, borderWidth: 1, borderColor: 'rgba(239,68,68,0.28)', marginBottom: 14 },
+  subscriptionErrorText: { color: '#FCA5A5', fontSize: 13, lineHeight: 18 },
+  subscriptionPayButton: { backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 16, alignItems: 'center', marginTop: 4 },
+  subscriptionPayButtonText: { color: '#08111F', fontSize: 16, fontWeight: '900' },
+  subscriptionFootnote: { color: '#9DB0DB', fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 14 },
+  checkoutModalWrap: { flex: 1, backgroundColor: '#07111F', paddingTop: 54, paddingHorizontal: 16, paddingBottom: 16 },
+  checkoutHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 },
+  checkoutTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '900', marginBottom: 4 },
+  checkoutSubtitle: { color: '#C9D5F2', fontSize: 13, lineHeight: 18 },
+  checkoutClose: { color: '#B7C7FF', fontSize: 15, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 6 },
+  checkoutWebviewShell: { flex: 1, borderRadius: 24, overflow: 'hidden', backgroundColor: '#FFFFFF' },
+  checkoutWebview: { flex: 1, backgroundColor: '#FFFFFF' },
+  pendingReviewPage: { flex: 1, paddingHorizontal: 22, paddingTop: 34, paddingBottom: 24, justifyContent: 'center' },
+  pendingReviewBadgeRow: { marginBottom: 14 },
+  pendingReviewBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(139, 164, 255, 0.16)', color: '#B7C7FF', borderWidth: 1, borderColor: 'rgba(139, 164, 255, 0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
+  pendingReviewTitle: { color: '#FFFFFF', fontSize: 30, fontWeight: '900', lineHeight: 36, marginBottom: 12 },
+  pendingReviewText: { color: '#D4DAF0', fontSize: 15, lineHeight: 22, marginBottom: 18 },
+  pendingReviewCard: { backgroundColor: '#121A33', borderRadius: 24, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginBottom: 14 },
+  pendingReviewCardTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginBottom: 10 },
+  pendingReviewCardText: { color: '#C7D1ED', fontSize: 14, lineHeight: 20, marginBottom: 6 },
+  pendingReviewFooter: { backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
+  pendingReviewFooterText: { color: '#9DB0DB', fontSize: 12, lineHeight: 18, textAlign: 'center' },
+  pendingReviewActionButton: { marginTop: 16, backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 14, alignItems: 'center' },
+  pendingReviewActionButtonText: { color: '#08111F', fontSize: 15, fontWeight: '900' },
   pendingWrap: { flex: 1, paddingHorizontal: 24, paddingTop: 72, backgroundColor: '#0B1020' },
   pendingBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(139, 164, 255, 0.18)', color: '#B7C7FF', borderWidth: 1, borderColor: 'rgba(139, 164, 255, 0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, fontWeight: '800', marginBottom: 14 },
   pendingTitle: { color: '#FFFFFF', fontSize: 28, fontWeight: '900', lineHeight: 34, marginBottom: 12 },
