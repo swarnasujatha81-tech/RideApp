@@ -6,37 +6,37 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-    getAuth, onAuthStateChanged,
-    PhoneAuthProvider, signInWithCredential,
-    signOut
+  getAuth, onAuthStateChanged,
+  PhoneAuthProvider, signInWithCredential,
+  signOut
 } from 'firebase/auth';
 import {
-    addDoc, arrayUnion, collection,
-    deleteDoc,
-    deleteField,
-    doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
+  addDoc, arrayUnion, collection,
+  deleteDoc,
+  deleteField,
+  doc, getDoc, getDocs, getFirestore, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where
 } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Alert,
-    Animated,
-    Dimensions,
-    FlatList,
-    Image,
-    Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
-    StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
+  Alert,
+  Animated,
+  Dimensions,
+  FlatList,
+  Image,
+  Linking, Modal, PanResponder, Platform, Pressable, ScrollView,
+  StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import DriverVerificationButtons, { startDriverVerificationListener } from '../../components/driver-verification';
 import {
-    FARE_ADJUSTMENTS,
-    PricingDemandLevel,
-    PricingRideType,
-    SHARE_AUTO_FARE_SETTINGS,
-    SURGE_SETTINGS,
-    VEHICLE_DISTANCE_SLABS,
-    VEHICLE_FARE_SETTINGS,
+  FARE_ADJUSTMENTS,
+  PricingDemandLevel,
+  PricingRideType,
+  SHARE_AUTO_FARE_SETTINGS,
+  SURGE_SETTINGS,
+  VEHICLE_DISTANCE_SLABS,
+  VEHICLE_FARE_SETTINGS,
 } from '../../lib/fare-settings';
 
 /* ================= FIREBASE CONFIG ================= */
@@ -552,6 +552,7 @@ function RideAppScreen() {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
+  const [nameForSignup, setNameForSignup] = useState('');
   const [mode, setMode] = useState<'USER' | 'DRIVER'>('USER');
   const [driverName, setDriverName] = useState('');
   const [driverPhone, setDriverPhone] = useState('');
@@ -601,6 +602,7 @@ function RideAppScreen() {
   const [otpInput, setOtpInput] = useState('');
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [verificationSent, setVerificationSent] = useState(false);
+  const [bookingValidation, setBookingValidation] = useState<{ visible: boolean; title?: string; message?: string }>({ visible: false });
   const recaptchaVerifier = useRef<any | null>(null);
 
   useEffect(() => {
@@ -661,8 +663,11 @@ function RideAppScreen() {
           if (!userSnap.exists()) {
             await setDoc(userRef, {
               phone: mobileNumber,
+              name: nameForSignup,
               createdAt: Timestamp.now()
             });
+          } else if (nameForSignup && !userSnap.data()?.name) {
+            await updateDoc(userRef, { name: nameForSignup });
           }
         } catch {
           // ignore Firestore write failures here
@@ -3344,14 +3349,21 @@ function RideAppScreen() {
     }
   ) => {
     const rideChoice = rideType ?? selectedRide;
-    if (!rideChoice || !pickupCoords || !destCoords) return;
+    if (!rideChoice) {
+      setBookingValidation({ visible: true, title: 'Select a vehicle', message: 'Please choose a vehicle type (Bike, Auto, Cab) before booking. Tap the vehicle icon to select.' });
+      return;
+    }
+    if (!pickupCoords || !destCoords) {
+      setBookingValidation({ visible: true, title: 'Add pickup & drop', message: 'Please set both pickup and drop locations so we can find nearby drivers for your trip.' });
+      return;
+    }
     if (!isWithinHyderabadService(pickupCoords) || !isWithinHyderabadService(destCoords)) {
       Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
       return;
     }
     const tripDistanceKm = calcDist(pickupCoords, destCoords);
     if (!profileName || !profilePhone) {
-      Alert.alert('Profile missing', 'Please login with a valid passenger profile.');
+      setBookingValidation({ visible: true, title: 'Profile required', message: 'Please sign in or create an account before booking. It only takes a moment.' });
       return;
     }
 
@@ -3572,6 +3584,19 @@ function RideAppScreen() {
   };
 
   const requestRide = async () => {
+    if (!selectedRide) {
+      Alert.alert('Select a ride type', 'Please choose a ride option to continue.');
+      return;
+    }
+    if (!pickupCoords || pickupInput === 'Current Location') {
+      Alert.alert('Pickup location required', 'Please select or confirm your pickup location.');
+      return;
+    }
+    if (!destCoords || !destination) {
+      Alert.alert('Drop location required', 'Please enter your destination.');
+      return;
+    }
+
     if (selectedRide === 'ShareAuto') {
       const introSeen = await AsyncStorage.getItem('shareauto_intro_seen');
       if (introSeen === '1') {
@@ -4265,23 +4290,88 @@ function RideAppScreen() {
 
   if (!loggedIn) {
     return (
-      <View style={styles.loginContainer}>
-        <Text style={styles.title}>Welcome</Text>
-        <Text style={{ marginTop: 12, color: '#666' }}>Sign in / Sign up with mobile (OTP)</Text>
-        <TextInput style={styles.input} placeholder="10-digit Mobile Number" value={mobileNumber} onChangeText={(v) => setMobileNumber(v.replace(/\D/g, '').slice(0, 10))} keyboardType="phone-pad" maxLength={10} />
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-          <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={handleSendOtp}>
-            <Text style={styles.buttonText}>Send OTP</Text>
-          </Pressable>
-          <Pressable style={[styles.primaryButton, { flex: 1, backgroundColor: verificationSent ? '#2563EB' : '#94A3B8' }]} onPress={handleVerifyOtp} disabled={!verificationSent}>
-            <Text style={styles.buttonText}>Verify OTP</Text>
-          </Pressable>
+      <View style={styles.loginScreen}>
+        <View style={styles.loginHero}>
+          <Text style={styles.loginBrandName}>share-it</Text>
+          <Text style={styles.loginBrandTagline}>Ride Smart • Earn Easy</Text>
         </View>
-        <TextInput style={[styles.input, { marginTop: 8 }]} placeholder="Enter OTP" value={otpInput} onChangeText={setOtpInput} keyboardType="number-pad" />
 
-        <Text style={{ marginTop: 8, color: '#777', fontSize: 12 }}>If Recaptcha modal is not available, install expo-firebase-recaptcha.</Text>
+        <View style={styles.loginForm}>
+          <Text style={styles.loginFormTitle}>Welcome back</Text>
+          <Text style={styles.loginFormSubtitle}>Sign in or create an account to continue</Text>
+
+          <View style={styles.loginInputWrap}>
+            <Text style={styles.loginLabel}>Mobile number</Text>
+            <TextInput
+              style={styles.loginInput}
+              placeholder="Enter 10-digit number"
+              value={mobileNumber}
+              onChangeText={(v) => setMobileNumber(v.replace(/\D/g, '').slice(0, 10))}
+              keyboardType="phone-pad"
+              maxLength={10}
+              placeholderTextColor="#9CA3AF"
+            />
+          </View>
+
+          {verificationSent ? (
+            <>
+              <View style={styles.loginInputWrap}>
+                <Text style={styles.loginLabel}>Your name (for signup)</Text>
+                <TextInput
+                  style={styles.loginInput}
+                  placeholder="Enter your full name"
+                  value={nameForSignup}
+                  onChangeText={setNameForSignup}
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+
+              <View style={styles.loginInputWrap}>
+                <Text style={styles.loginLabel}>Enter OTP</Text>
+                <TextInput
+                  style={styles.loginInput}
+                  placeholder="6-digit code from SMS"
+                  value={otpInput}
+                  onChangeText={setOtpInput}
+                  keyboardType="number-pad"
+                  placeholderTextColor="#9CA3AF"
+                  maxLength={6}
+                />
+              </View>
+
+              <Pressable style={styles.loginPrimaryButton} onPress={handleVerifyOtp}>
+                <Text style={styles.loginPrimaryButtonText}>Verify & Continue</Text>
+              </Pressable>
+
+              <Pressable style={styles.loginSecondaryButton} onPress={() => { setVerificationSent(false); setOtpInput(''); setNameForSignup(''); }}>
+                <Text style={styles.loginSecondaryButtonText}>Change number</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text style={styles.loginHintText}>We'll send a 6-digit code to verify your number.</Text>
+              <Pressable style={styles.loginPrimaryButton} onPress={handleSendOtp}>
+                <Text style={styles.loginPrimaryButtonText}>Send OTP</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+
+        <Text style={styles.loginFooter}>Secure phone-only authentication • Your number stays private</Text>
         <View nativeID="recaptcha-container" style={{ width: 0, height: 0 }} />
         <FirebaseRecaptchaVerifierModal ref={recaptchaVerifier} firebaseConfig={firebaseConfig} />
+
+        <Modal visible={bookingValidation.visible} transparent animationType="fade" onRequestClose={() => setBookingValidation({ visible: false })}>
+          <View style={styles.validationModalWrap}>
+            <View style={styles.validationModalCard}>
+              <Text style={styles.validationModalTitle}>{bookingValidation.title}</Text>
+              <Text style={styles.validationModalMessage}>{bookingValidation.message}</Text>
+              <Pressable style={styles.validationModalButton} onPress={() => setBookingValidation({ visible: false })}>
+                <Text style={styles.validationModalButtonText}>Got it</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }
@@ -6386,6 +6476,29 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFF' },
+  loginScreen: { flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 0 },
+  loginHero: { backgroundColor: '#111827', paddingTop: 56, paddingBottom: 32, paddingHorizontal: 24, alignItems: 'center' },
+  loginBrandName: { fontSize: 42, fontWeight: '900', color: '#FFFFFF', marginBottom: 8 },
+  loginBrandTagline: { fontSize: 16, fontWeight: '700', color: '#E5E7EB' },
+  loginForm: { paddingHorizontal: 24, paddingTop: 32, paddingBottom: 24 },
+  loginFormTitle: { fontSize: 26, fontWeight: '900', color: '#111827', marginBottom: 6 },
+  loginFormSubtitle: { fontSize: 14, color: '#6B7280', marginBottom: 24, lineHeight: 20 },
+  loginInputWrap: { marginBottom: 18 },
+  loginLabel: { fontSize: 12, fontWeight: '700', color: '#111827', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 },
+  loginInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#111827' },
+  loginPrimaryButton: { backgroundColor: '#111827', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8, marginBottom: 12 },
+  loginPrimaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+
+  validationModalWrap: { flex: 1, backgroundColor: 'rgba(6,8,23,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  validationModalCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 20, alignItems: 'center' },
+  validationModalTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginBottom: 8, textAlign: 'center' },
+  validationModalMessage: { color: '#374151', fontSize: 14, textAlign: 'center', marginBottom: 18 },
+  validationModalButton: { backgroundColor: '#0F172A', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 12 },
+  validationModalButtonText: { color: '#FFFFFF', fontWeight: '800' },
+  loginSecondaryButton: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  loginSecondaryButtonText: { color: '#111827', fontSize: 16, fontWeight: '700' },
+  loginHintText: { fontSize: 13, color: '#6B7280', marginBottom: 20, marginTop: 4, lineHeight: 18 },
+  loginFooter: { position: 'absolute', bottom: 32, left: 24, right: 24, textAlign: 'center', fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
   map: { flex: 1 },
   loyaltyBackground: { flex: 1, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', padding: 30 },
   loyaltyIcon: { fontSize: 80, marginBottom: 20 },
