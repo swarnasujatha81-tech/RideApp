@@ -4,7 +4,7 @@ import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/fires
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { db, storage } from '../lib/firebase';
+import { auth, db, storage } from '../lib/firebase';
 
 type PickType = 'rc' | 'license';
 
@@ -27,12 +27,22 @@ export async function pickImageAsync() {
 
 // Helper: upload an image URI to Firebase Storage and return download URL
 export async function uploadImage(uri: string, storagePath: string) {
-  const response = await fetch(uri);
-  const blob = await response.blob();
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.onload = () => resolve(request.response);
+    request.onerror = () => reject(new Error('Could not read selected image. Please choose the image again.'));
+    request.responseType = 'blob';
+    request.open('GET', uri, true);
+    request.send(null);
+  });
+
   const ref = storageRef(storage, storagePath);
-  await uploadBytes(ref, blob);
-  const url = await getDownloadURL(ref);
-  return url;
+  try {
+    const snapshot = await uploadBytes(ref, blob, { contentType: 'image/jpeg' });
+    return await getDownloadURL(snapshot.ref);
+  } finally {
+    (blob as Blob & { close?: () => void }).close?.();
+  }
 }
 
 // Helper: save driver record to Firestore
@@ -50,6 +60,10 @@ export async function saveDriverRecord(payload: {
   const normalizedPhone = payload.phone.replace(/\D/g, '');
   if (!normalizedPhone) {
     throw new Error('Invalid phone number');
+  }
+
+  if (!payload.authUid) {
+    throw new Error('Please login again before submitting driver documents.');
   }
 
   const docRef = doc(db, 'drivers', normalizedPhone);
@@ -149,8 +163,13 @@ export default function DriverVerificationButtons({
     try {
       setUploading(true);
       const timestamp = Date.now();
-      const rcPath = `drivers/${examplePhone}/rc_${timestamp}.jpg`;
-      const licensePath = `drivers/${examplePhone}/license_${timestamp}.jpg`;
+      const ownerUid = authUid || auth.currentUser?.uid;
+      if (!ownerUid) {
+        throw new Error('Please login again before submitting driver documents.');
+      }
+
+      const rcPath = `drivers/${examplePhone}/${ownerUid}/rc_${timestamp}.jpg`;
+      const licensePath = `drivers/${examplePhone}/${ownerUid}/license_${timestamp}.jpg`;
 
       const [rcUrl, licenseUrl] = await Promise.all([
         uploadImage(rcUri, rcPath),
@@ -161,7 +180,7 @@ export default function DriverVerificationButtons({
         name: exampleName,
         phone: examplePhone,
         vehicleNumber: exampleVehicleNumber,
-        authUid,
+        authUid: ownerUid,
         vehicleType,
         driverPhotoUrl,
         activeDeviceId,

@@ -19,8 +19,12 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     return { hasError: true };
   }
 
-  componentDidCatch() {
-    // Keep the app alive and show fallback UI in production crashes.
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[AppErrorBoundary]', {
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack,
+    });
   }
 
   render() {

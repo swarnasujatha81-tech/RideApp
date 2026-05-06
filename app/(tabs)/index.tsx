@@ -1,17 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { getAuth, onAuthStateChanged, PhoneAuthProvider, signInWithCredential, signOut } from 'firebase/auth';
+import { onAuthStateChanged, PhoneAuthProvider, signInWithCredential, signOut } from 'firebase/auth';
 import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import MapView, { Marker, UrlTile } from 'react-native-maps';
 import { WebView } from 'react-native-webview';
 import DriverVerificationButtons from '../../components/driver-verification';
+import FirebaseRecaptchaVerifier from '../../components/firebase-recaptcha-verifier';
+import OSMMapView, { OSMMapViewRef } from '../../components/osm-map-view';
 import { FARE_ADJUSTMENTS, PricingDemandLevel, PricingRideType, SHARE_AUTO_FARE_SETTINGS, SURGE_SETTINGS, VEHICLE_DISTANCE_SLABS, VEHICLE_FARE_SETTINGS } from '../../lib/fare-settings';
+import { useAuth } from '../../lib/auth-context';
 import { AppErrorBoundary } from './ride-home/AppErrorBoundary';
 import { auth, db, firebaseConfig, storage } from './ride-home/firebase-core';
 import { decryptOTP, encryptOTP, generateOTP } from './ride-home/otp';
@@ -23,21 +24,10 @@ import { calcSegmentEtaMinutes, findPartialShareAuto, findShareAutoMatch, toPool
 import { calculateRideFare, getPricingDemandLevel, type DemandLevel } from './ride-home/pricing';
 import { isActiveRideStatus } from './ride-home/types';
 
-const OPENSTREETMAP_TILE_URL = 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
-
-function OpenStreetMapTiles() {
-  return (
-    <UrlTile
-      urlTemplate={OPENSTREETMAP_TILE_URL}
-      maximumZ={19}
-      tileSize={256}
-    />
-  );
-}
-
 function RideAppScreen() {
-  const [loggedIn, setLoggedIn] = useState(false);
-  const mapRef = useRef<MapView | null>(null);
+  const { initializing: authInitializing } = useAuth();
+  const [loggedIn, setLoggedIn] = useState(() => !!auth.currentUser);
+  const mapRef = useRef<OSMMapViewRef | null>(null);
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -245,11 +235,7 @@ function RideAppScreen() {
     driverSessionMovedRef.current = true;
     await clearDriverIdentityOnThisDevice();
     Alert.alert('Driver account moved', 'This driver account was opened on another mobile with OTP. Please verify OTP again here if you want to use this phone.');
-    try {
-      await signOut(auth);
-    } finally {
-      driverSessionMovedRef.current = false;
-    }
+    driverSessionMovedRef.current = false;
   }, [clearDriverIdentityOnThisDevice]);
 
   const syncDriverRecordForPhone = useCallback(async (
@@ -470,23 +456,31 @@ function RideAppScreen() {
   }, [driverDocId]);
 
   const handleSendOtp = async () => {
+    console.log('[auth] send otp requested');
     if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
       Alert.alert('Invalid mobile', 'Enter a valid 10-digit mobile number starting with 6,7,8 or 9.');
       return;
     }
     try {
+      if (!recaptchaVerifier.current) {
+        throw new Error('reCAPTCHA verifier is not ready.');
+      }
       const phoneProvider = new PhoneAuthProvider(auth);
+      console.log('[auth] verifying phone number');
       const id = await phoneProvider.verifyPhoneNumber('+91' + mobileNumber, recaptchaVerifier.current);
+      console.log('[auth] phone verification id received');
       setVerificationId(id);
       setVerificationSent(true);
       Alert.alert('OTP sent', 'Please check your SMS for the OTP.');
     } catch (err: any) {
+      console.error('[auth] send otp failed', err);
       const msg = err?.message || 'Could not send OTP. Please try again.';
       Alert.alert('OTP failed', msg);
     }
   };
 
   const handleVerifyOtp = async () => {
+    console.log('[auth] verify otp requested');
     try {
       if (!verificationId) {
         Alert.alert('No OTP requested', 'Please request an OTP first.');
@@ -495,7 +489,9 @@ function RideAppScreen() {
       const requestedPhone = normalizePhoneDigits(mobileNumber);
       otpClaimPhoneRef.current = requestedPhone;
       const cred = PhoneAuthProvider.credential(verificationId, otpInput);
+      console.log('[auth] signing in with phone credential');
       const userCred = await signInWithCredential(auth, cred);
+      console.log('[auth] sign in completed', { uid: userCred.user?.uid || null });
       const user = userCred.user;
       if (user) {
         const verifiedPhone = normalizePhoneDigits(requestedPhone || user.phoneNumber);
@@ -522,9 +518,11 @@ function RideAppScreen() {
           nameFallback: nameForSignup,
         });
         otpClaimPhoneRef.current = '';
+        console.log('[auth] post-login profile sync completed');
       }
     } catch (err: any) {
       otpClaimPhoneRef.current = '';
+      console.error('[auth] verify otp failed', err);
       const msg = err?.message || 'OTP verification failed. Please try again.';
       Alert.alert('Verification failed', msg);
     }
@@ -1915,10 +1913,16 @@ function RideAppScreen() {
     let mounted = true;
     let locationSubscription: Location.LocationSubscription | null = null;
     const authUnsubscribe = onAuthStateChanged(auth, async (user) => {
+      console.log('[auth] state changed', { loggedIn: !!user, uid: user?.uid || null });
+      if (!mounted) return;
       setLoggedIn(!!user);
+      console.log('[navigation] auth state applied', { target: user ? 'RideAppScreen/home' : 'RideAppScreen/login' });
       if (!user) {
-        if (!mounted) return;
-        await clearDriverIdentityOnThisDevice();
+        try {
+          await clearDriverIdentityOnThisDevice();
+        } catch (error) {
+          console.error('[auth] failed clearing signed-out state', error);
+        }
         setProfileName('');
         setProfileNameEdit('');
         setProfilePhone('');
@@ -1975,7 +1979,9 @@ function RideAppScreen() {
             if (claimDevice) otpClaimPhoneRef.current = '';
           }
         }
-      } catch {
+        console.log('[auth] profile hydration completed');
+      } catch (error) {
+        console.error('[auth] profile hydration failed', error);
         if (!mounted) return;
         setProfileName('');
         setProfileNameEdit('');
@@ -1989,6 +1995,7 @@ function RideAppScreen() {
 
     const init = async () => {
       try {
+        console.log('[startup] RideAppScreen init started');
         const savedVehicle = await AsyncStorage.getItem('driver_vehicle');
         if (mounted && savedVehicle) {
           if (savedVehicle === 'Bike' || savedVehicle === 'Cycle' || savedVehicle === 'Auto' || savedVehicle === 'Cab') {
@@ -2042,7 +2049,9 @@ function RideAppScreen() {
         } else if (mounted) {
           setIsFetchingCurrentLocation(false);
         }
-      } catch {
+        console.log('[startup] RideAppScreen init completed');
+      } catch (error) {
+        console.error('[startup] RideAppScreen init failed', error);
         if (mounted) setIsFetchingCurrentLocation(false);
         // Keep app functional even when location/storage services fail.
       }
@@ -3754,6 +3763,15 @@ function RideAppScreen() {
 
   // Email/password auth removed — phone-only OTP flow handled by Send/Verify OTP handlers.
 
+  if (authInitializing) {
+    return (
+      <View style={styles.authLoadingScreen}>
+        <Text style={styles.authLoadingTitle}>share-it</Text>
+        <Text style={styles.authLoadingText}>Restoring your ride session...</Text>
+      </View>
+    );
+  }
+
   if (!loggedIn) {
     return (
       <View style={styles.loginScreen}>
@@ -3825,7 +3843,7 @@ function RideAppScreen() {
 
         <Text style={styles.loginFooter}>Secure phone-only authentication • Your number stays private</Text>
         <View nativeID="recaptcha-container" style={{ width: 0, height: 0 }} />
-        <FirebaseRecaptchaVerifierModal ref={recaptchaVerifier} firebaseConfig={firebaseConfig} />
+        <FirebaseRecaptchaVerifier ref={recaptchaVerifier} firebaseConfig={firebaseConfig} />
 
         <Modal visible={bookingValidation.visible} transparent animationType="fade" onRequestClose={() => setBookingValidation({ visible: false })}>
           <View style={styles.validationModalWrap}>
@@ -3846,10 +3864,9 @@ function RideAppScreen() {
     <View style={styles.container}>
       {mode === 'USER' ? (
           (!userBookedRide || showRideHomeButton) ? (
-            <MapView 
+            <OSMMapView
               ref={mapRef}
               style={styles.map}
-              mapType="none"
               onPress={async (e) => {
                 const point = e.nativeEvent.coordinate;
                 if (!isWithinHyderabadService(point)) {
@@ -3862,29 +3879,30 @@ function RideAppScreen() {
                 setDestination(dropArea);
               }}
               initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : DEFAULT_MAP_REGION}
-            >
-              <OpenStreetMapTiles />
-              {pickupCoords && <Marker coordinate={pickupCoords} title="Pickup" pinColor="blue" />}
-              {destCoords && <Marker coordinate={destCoords} title="Drop" />}
-            </MapView>
+              markers={[
+                ...(pickupCoords ? [{ coordinate: pickupCoords, title: 'Pickup', color: '#2563EB', label: 'P' }] : []),
+                ...(destCoords ? [{ coordinate: destCoords, title: 'Drop', color: '#EF4444', label: 'D' }] : []),
+              ]}
+            />
           ) : (
             (userBookedRide.status === 'accepted' || userBookedRide.status === 'started') ? (
               <View style={{ flex: 1, position: 'relative' }}>
-                <MapView
+                <OSMMapView
                   ref={mapRef}
                   style={styles.map}
-                  mapType="none"
                   initialRegion={location ? { ...location, latitudeDelta: 0.05, longitudeDelta: 0.05 } : DEFAULT_MAP_REGION}
-                >
-                  <OpenStreetMapTiles />
-                  <Marker coordinate={getUserPerspectivePickup(userBookedRide) || userBookedRide.pickup} title="Pickup" pinColor="blue" />
-                  <Marker coordinate={getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop} title="Drop" />
-                  {userBookedRide.driverLocation && (
-                    <Marker coordinate={userBookedRide.driverLocation} title="Driver" description={userBookedRide.driverName || 'Driver'}>
-                      <Text style={{ fontSize: 28 }}>{icons[userBookedRide.type]}</Text>
-                    </Marker>
-                  )}
-                </MapView>
+                  markers={[
+                    { coordinate: getUserPerspectivePickup(userBookedRide) || userBookedRide.pickup, title: 'Pickup', color: '#2563EB', label: 'P' },
+                    { coordinate: getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop, title: 'Drop', color: '#EF4444', label: 'D' },
+                    ...(userBookedRide.driverLocation ? [{
+                      coordinate: userBookedRide.driverLocation,
+                      title: 'Driver',
+                      description: userBookedRide.driverName || 'Driver',
+                      color: '#16A34A',
+                      label: icons[userBookedRide.type],
+                    }] : []),
+                  ]}
+                />
                 {userBookedRide.status === 'started' && (
                   <Animated.View style={[styles.journeyQuoteCard, { opacity: journeyAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) }]}>
                     <Text style={styles.journeyQuoteText}>{journeyQuotes[currentQuoteIndex]}</Text>
@@ -5483,9 +5501,8 @@ function RideAppScreen() {
         }}
       >
         <View style={styles.driverMapModalWrap}>
-          <MapView
+          <OSMMapView
             style={styles.driverMapModalMap}
-            mapType="none"
             initialRegion={
               pendingHomeLocation
                 ? {
@@ -5505,12 +5522,8 @@ function RideAppScreen() {
               }
               setPendingHomeLocation(coord);
             }}
-          >
-            <OpenStreetMapTiles />
-            {pendingHomeLocation && (
-              <Marker coordinate={pendingHomeLocation} title="Home" pinColor="#0F8A47" />
-            )}
-          </MapView>
+            markers={pendingHomeLocation ? [{ coordinate: pendingHomeLocation, title: 'Home', color: '#0F8A47', label: 'H' }] : []}
+          />
 
           <View style={styles.driverMapModalControls}>
             <Text style={styles.driverMapModalTitle}>Pin your home location</Text>
@@ -6062,9 +6075,8 @@ function RideAppScreen() {
                 </View>
               </View>
             </Modal>
-          <MapView
+          <OSMMapView
             style={styles.driverMapModalMap}
-            mapType="none"
             initialRegion={
               pendingDriverDestinationMarker
                 ? { ...pendingDriverDestinationMarker, latitudeDelta: 0.05, longitudeDelta: 0.05 }
@@ -6077,16 +6089,13 @@ function RideAppScreen() {
               setPendingDriverDestinationMarker(point);
               void playMarkerSound(400);
             }}
-          >
-            <OpenStreetMapTiles />
-            {pendingDriverDestinationMarker && (
-              <Marker
-                coordinate={pendingDriverDestinationMarker}
-                title="Destination filter marker"
-                pinColor="green"
-              />
-            )}
-          </MapView>
+            markers={pendingDriverDestinationMarker ? [{
+              coordinate: pendingDriverDestinationMarker,
+              title: 'Destination filter marker',
+              color: '#16A34A',
+              label: 'D',
+            }] : []}
+          />
 
           <View style={styles.driverMapModalControls}>
             <Text style={styles.driverMapModalTitle}>Tap map to set destination marker</Text>

@@ -1,0 +1,34 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isImage() {
+      return request.resource != null
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    function ownsPhone(phone) {
+      return isAuthenticated()
+        && request.auth.token.phone_number == '+91' + phone;
+    }
+
+    match /drivers/{phone}/{uid}/{fileName} {
+      allow read: if isAuthenticated() && (request.auth.uid == uid || ownsPhone(phone));
+      allow write: if isAuthenticated()
+        && request.auth.uid == uid
+        && ownsPhone(phone)
+        && isImage();
+    }
+
+    match /driver_photos/{uid}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+        && request.auth.uid == uid
+        && isImage();
+    }
+  }
+}
