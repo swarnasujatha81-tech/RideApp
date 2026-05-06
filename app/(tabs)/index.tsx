@@ -8,7 +8,7 @@ import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, ge
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, UrlTile } from 'react-native-maps';
 import { WebView } from 'react-native-webview';
 import DriverVerificationButtons from '../../components/driver-verification';
 import { FARE_ADJUSTMENTS, PricingDemandLevel, PricingRideType, SHARE_AUTO_FARE_SETTINGS, SURGE_SETTINGS, VEHICLE_DISTANCE_SLABS, VEHICLE_FARE_SETTINGS } from '../../lib/fare-settings';
@@ -22,6 +22,18 @@ import { calcDist, getAreaLabelFromCoord, getClosestPopularAreaMatch, getMandalN
 import { calcSegmentEtaMinutes, findPartialShareAuto, findShareAutoMatch, toPoolPassenger } from './ride-home/shareAutoMatching';
 import { calculateRideFare, getPricingDemandLevel, type DemandLevel } from './ride-home/pricing';
 import { isActiveRideStatus } from './ride-home/types';
+
+const OPENSTREETMAP_TILE_URL = 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
+
+function OpenStreetMapTiles() {
+  return (
+    <UrlTile
+      urlTemplate={OPENSTREETMAP_TILE_URL}
+      maximumZ={19}
+      tileSize={256}
+    />
+  );
+}
 
 function RideAppScreen() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -3837,6 +3849,7 @@ function RideAppScreen() {
             <MapView 
               ref={mapRef}
               style={styles.map}
+              mapType="none"
               onPress={async (e) => {
                 const point = e.nativeEvent.coordinate;
                 if (!isWithinHyderabadService(point)) {
@@ -3850,6 +3863,7 @@ function RideAppScreen() {
               }}
               initialRegion={location ? {...location, latitudeDelta: 0.05, longitudeDelta: 0.05} : DEFAULT_MAP_REGION}
             >
+              <OpenStreetMapTiles />
               {pickupCoords && <Marker coordinate={pickupCoords} title="Pickup" pinColor="blue" />}
               {destCoords && <Marker coordinate={destCoords} title="Drop" />}
             </MapView>
@@ -3859,8 +3873,10 @@ function RideAppScreen() {
                 <MapView
                   ref={mapRef}
                   style={styles.map}
+                  mapType="none"
                   initialRegion={location ? { ...location, latitudeDelta: 0.05, longitudeDelta: 0.05 } : DEFAULT_MAP_REGION}
                 >
+                  <OpenStreetMapTiles />
                   <Marker coordinate={getUserPerspectivePickup(userBookedRide) || userBookedRide.pickup} title="Pickup" pinColor="blue" />
                   <Marker coordinate={getUserPerspectiveDrop(userBookedRide) || userBookedRide.drop} title="Drop" />
                   {userBookedRide.driverLocation && (
@@ -5469,6 +5485,7 @@ function RideAppScreen() {
         <View style={styles.driverMapModalWrap}>
           <MapView
             style={styles.driverMapModalMap}
+            mapType="none"
             initialRegion={
               pendingHomeLocation
                 ? {
@@ -5489,6 +5506,7 @@ function RideAppScreen() {
               setPendingHomeLocation(coord);
             }}
           >
+            <OpenStreetMapTiles />
             {pendingHomeLocation && (
               <Marker coordinate={pendingHomeLocation} title="Home" pinColor="#0F8A47" />
             )}
@@ -6046,6 +6064,7 @@ function RideAppScreen() {
             </Modal>
           <MapView
             style={styles.driverMapModalMap}
+            mapType="none"
             initialRegion={
               pendingDriverDestinationMarker
                 ? { ...pendingDriverDestinationMarker, latitudeDelta: 0.05, longitudeDelta: 0.05 }
@@ -6059,6 +6078,7 @@ function RideAppScreen() {
               void playMarkerSound(400);
             }}
           >
+            <OpenStreetMapTiles />
             {pendingDriverDestinationMarker && (
               <Marker
                 coordinate={pendingDriverDestinationMarker}
