@@ -1,0 +1,135 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Drivers collection: ownership via activeAuthUid
+    match /drivers/{driverId} {
+      // Read (get/listen): owner or non-existing (for existence check)
+      allow read: if isAuthenticated() && (
+        !resource.exists || resource.data.activeAuthUid == request.auth.uid
+      );
+      // Create: activeAuthUid must match requester
+      allow create: if isAuthenticated() && request.resource.data.activeAuthUid == request.auth.uid;
+      // Update: existing activeAuthUid must match
+      allow update: if isAuthenticated() && resource.data.activeAuthUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Rides collection: read open to authenticated users; writes restricted to participants
+    match /rides/{rideId} {
+      // Read: any authenticated user (app needs collection-wide listener)
+      allow read: if isAuthenticated();
+      // Create: passenger or shared passenger
+      allow create: if isAuthenticated() && (
+        request.resource.data.passengerId == request.auth.uid ||
+        (request.resource.data.sharedPassengerIds is list && request.auth.uid in request.resource.data.sharedPassengerIds)
+      );
+      // Update: passenger, driver, or shared passenger
+      allow update: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid ||
+        (resource.data.sharedPassengerIds is list && request.auth.uid in resource.data.sharedPassengerIds)
+      );
+      // Delete: passenger or driver only
+      allow delete: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+    }
+
+    // Ride messages subcollection under a ride
+    match /rides/{rideId}/messages/{messageId} {
+      // Allow read/write if user is passenger or driver of the parent ride
+      allow read, write: if isAuthenticated() && (
+        get(/databases/$(database)/documents/rides/$(rideId)).data.passengerId == request.auth.uid ||
+        get(/databases/$(database)/documents/rides/$(rideId)).data.driverId == request.auth.uid
+      );
+    }
+
+    // Ride history: both passenger and driver can access their entries
+    match /rideHistory/{historyId} {
+      // Read
+      allow read: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      // Create
+      allow create: if isAuthenticated() && (
+        request.resource.data.passengerId == request.auth.uid ||
+        request.resource.data.driverId == request.auth.uid
+      );
+      // Update/Delete
+      allow update, delete: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+    }
+
+    // Help forum
+    match /helpForum/{questionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.askedByEmail == request.auth.token.email;
+      allow update: if isAuthenticated() && (
+        resource.data.askedByEmail == request.auth.token.email ||
+        request.auth.token.firebase.sign_in_provider == 'custom'
+      );
+      allow delete: if false;
+    }
+
+    // Ride ratings
+    match /rideRatings/{ratingId} {
+      allow read: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      allow create: if isAuthenticated() && (
+        request.resource.data.passengerId == request.auth.uid ||
+        request.resource.data.driverId == request.auth.uid
+      );
+      allow update, delete: if false;
+    }
+
+    // Driver reports
+    match /driverReports/{reportId} {
+      allow read: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      allow create: if isAuthenticated() && (
+        request.resource.data.passengerId == request.auth.uid ||
+        request.resource.data.driverId == request.auth.uid
+      );
+      allow update, delete: if false;
+    }
+
+    // Earnings withdrawals
+    match /earnWithdrawals/{withdrawalId} {
+      allow read: if isAuthenticated() && resource.data.driverId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.driverId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.driverId == request.auth.uid;
+    }
+
+    // ShareAuto pools
+    match /shareAutoPools/{poolId} {
+      // Read: owner (passenger) or any driver when pool is searching
+      allow read: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        resource.data.status == 'searching'
+      );
+      // Create: passenger only
+      allow create: if isAuthenticated() && request.resource.data.passengerId == request.auth.uid;
+      // Delete: owner (passenger) only
+      allow delete: if isAuthenticated() && resource.data.passengerId == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}
