@@ -1,9 +1,9 @@
 import { StyleSheet } from 'react-native';
 import {
-  ACTIVE_RIDE_BUTTON_HEIGHT,
-  ACTIVE_RIDE_BUTTON_WIDTH,
-  CURRENT_LOC_FAB_RISE,
-  SCREEN_HEIGHT,
+    ACTIVE_RIDE_BUTTON_HEIGHT,
+    ACTIVE_RIDE_BUTTON_WIDTH,
+    CURRENT_LOC_FAB_RISE,
+    SCREEN_HEIGHT,
 } from './constants';
 
 export const styles = 
@@ -47,8 +47,24 @@ StyleSheet.create({
   brandName: { fontSize: 42, fontWeight: '900', color: '#007AFF', marginBottom: 10 },
   slogan: { fontSize: 18, fontWeight: '700', color: '#1C1C1E', textAlign: 'center', marginBottom: 20 },
   dashboard: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: 'white', padding: 20, borderRadius: 25, elevation: 4, width: '100%', justifyContent:'space-between' },
-  historyBtn: { marginTop: 12, backgroundColor: '#0A8F48', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12 },
+  historyBtn: {
+    marginTop: 12,
+    backgroundColor: '#0F172A',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  historyBtnEyebrow: { color: '#94A3B8', fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 },
   historyBtnText: { color: 'white', fontWeight: '700' },
+  historyBtnSubtext: { color: '#CBD5E1', fontSize: 12, lineHeight: 18, marginTop: 4 },
   changeVehicleBtn: { marginTop: 10, backgroundColor: '#1D4ED8', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12 },
   changeVehicleBtnText: { color: '#FFFFFF', fontWeight: '700' },
   dashItem: { width: '45%', alignItems: 'center', marginBottom: 15 },

@@ -7,25 +7,28 @@ import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, ge
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import DriverVerificationButtons from '../../components/driver-verification';
 import FirebaseRecaptchaVerifier from '../../components/firebase-recaptcha-verifier';
 import OSMMapView, { OSMMapViewRef } from '../../components/osm-map-view';
-import { FARE_ADJUSTMENTS, PricingDemandLevel, PricingRideType, SHARE_AUTO_FARE_SETTINGS, SURGE_SETTINGS, VEHICLE_DISTANCE_SLABS, VEHICLE_FARE_SETTINGS } from '../../lib/fare-settings';
 import { useAuth } from '../../lib/auth-context';
+import { FARE_ADJUSTMENTS, SHARE_AUTO_FARE_SETTINGS } from '../../lib/fare-settings';
 import { AppErrorBoundary } from './ride-home/AppErrorBoundary';
+import { ACTIVE_RIDE_BUTTON_HEIGHT, ACTIVE_RIDE_BUTTON_WIDTH, CHAT_SOUND_URL, CURRENT_LOC_FAB_RISE, DEFAULT_MAP_REGION, DRIVER_ALERT_SOUND_URL, DRIVER_DESTINATION_MARKER_RADIUS_KM, DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT, DRIVER_SUBSCRIPTION_AMOUNT, DRIVER_SUBSCRIPTION_DAYS, EARN_REWARD_AMOUNT, FIVE_MIN_MS, GAME_BIRD_HIT_SOUND_URL, GAME_UNLOCK_SOUND_URL, GAME_ZOMBIE_HIT_SOUND_URL, HYDERABAD_SERVICE_RADIUS_KM, icons, MARKER_PLACE_SOUND_URL, PRIMARY_ACTION_SOUND_URL, RAZORPAY_KEY_ID, SCREEN_HEIGHT, SCREEN_WIDTH, VEHICLE_SELECT_SOUND_URL } from './ride-home/constants';
 import { auth, db, firebaseConfig, storage } from './ride-home/firebase-core';
-import { decryptOTP, encryptOTP, generateOTP } from './ride-home/otp';
-import { styles } from './ride-home/styles';
-import { ACTIVE_RIDE_BUTTON_HEIGHT, ACTIVE_RIDE_BUTTON_WIDTH, CHAT_SOUND_URL, CURRENT_LOC_FAB_RISE, DEFAULT_MAP_REGION, DRIVER_ALERT_SOUND_URL, DRIVER_DESTINATION_MARKER_RADIUS_KM, DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT, DRIVER_SUBSCRIPTION_AMOUNT, DRIVER_SUBSCRIPTION_DAYS, EARN_REWARD_AMOUNT, FIVE_MIN_MS, GAME_BIRD_HIT_SOUND_URL, GAME_UNLOCK_SOUND_URL, GAME_ZOMBIE_HIT_SOUND_URL, HYDERABAD_CENTER, HYDERABAD_POPULAR_AREA_POINTS, HYDERABAD_POPULAR_AREAS, HYDERABAD_SERVICE_RADIUS_KM, MARKER_PLACE_SOUND_URL, PRIMARY_ACTION_SOUND_URL, RAZORPAY_KEY_ID, SCREEN_HEIGHT, SCREEN_WIDTH, VEHICLE_SELECT_SOUND_URL, icons } from './ride-home/constants';
-import type { ChatMessage, Coord, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoMatchResult, ShareAutoPool } from './ride-home/types';
 import { calcDist, getAreaLabelFromCoord, getClosestPopularAreaMatch, getMandalName, getNearestPopularArea, getPrimaryAreaName, getRideCreatedAtMs, getSearchSuggestions, isFreshWaitingRide, isValidEmail, isValidMobileFn, isValidVehiclePlate, isWithinHyderabadService } from './ride-home/geo';
-import { calcSegmentEtaMinutes, findPartialShareAuto, findShareAutoMatch, toPoolPassenger } from './ride-home/shareAutoMatching';
+import { decryptOTP, encryptOTP, generateOTP } from './ride-home/otp';
 import { calculateRideFare, getPricingDemandLevel, type DemandLevel } from './ride-home/pricing';
+import { calcSegmentEtaMinutes, findShareAutoMatch, toPoolPassenger } from './ride-home/shareAutoMatching';
+import { styles } from './ride-home/styles';
+import type { ChatMessage, Coord, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoPool } from './ride-home/types';
 import { isActiveRideStatus } from './ride-home/types';
 
 function RideAppScreen() {
   const { initializing: authInitializing } = useAuth();
+  const insets = useSafeAreaInsets();
+  const bottomSafeSpacing = Math.max(16, insets.bottom);
   const [loggedIn, setLoggedIn] = useState(() => !!auth.currentUser);
   const mapRef = useRef<OSMMapViewRef | null>(null);
   const [isSignup, setIsSignup] = useState(false);
@@ -983,7 +986,7 @@ function RideAppScreen() {
     },
     onPanResponderRelease: (_, gestureState) => {
       const nextX = Math.min(Math.max(activeRideButtonLastPos.current.x + gestureState.dx, 12), SCREEN_WIDTH - ACTIVE_RIDE_BUTTON_WIDTH - 12);
-      const nextY = Math.min(Math.max(activeRideButtonLastPos.current.y + gestureState.dy, 80), SCREEN_HEIGHT - ACTIVE_RIDE_BUTTON_HEIGHT - 26);
+      const nextY = Math.min(Math.max(activeRideButtonLastPos.current.y + gestureState.dy, 80), SCREEN_HEIGHT - ACTIVE_RIDE_BUTTON_HEIGHT - bottomSafeSpacing - 16);
       activeRideButtonLastPos.current = { x: nextX, y: nextY };
       Animated.spring(activeRideButtonPos, {
         toValue: { x: nextX, y: nextY },
@@ -991,7 +994,7 @@ function RideAppScreen() {
         friction: 8,
       }).start();
     },
-  }), [activeRideButtonPos]);
+  }), [activeRideButtonPos, bottomSafeSpacing]);
 
   useEffect(() => {
     if (userBookedRide?.status === 'started') {
@@ -3926,7 +3929,7 @@ function RideAppScreen() {
       <View style={styles.proBackground}>
              <ScrollView
                style={{ width: '100%' }}
-               contentContainerStyle={{ alignItems: 'center', paddingTop: 80, paddingBottom: 180, flexGrow: 1 }}
+               contentContainerStyle={{ alignItems: 'stretch', paddingHorizontal: 16, paddingTop: 80, paddingBottom: 220 + bottomSafeSpacing, flexGrow: 1 }}
                showsVerticalScrollIndicator={false}
              >
                <View style={styles.brandingContainer}>
@@ -3978,23 +3981,10 @@ function RideAppScreen() {
                     <Text style={styles.driverInfoText}>Mobile: {driverPhone || 'N/A'}</Text>
                     <Text style={styles.driverInfoText}>Vehicle No: {vehiclePlate || 'N/A'}</Text>
                   </View>
-                  <View style={styles.driverAvailabilityCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.driverAvailabilityTitle}>Ride Requests</Text>
-                      <Text style={styles.driverAvailabilityHint}>{driverOnline ? 'You are online and receiving requests' : 'You are offline and hidden from requests'}</Text>
-                    </View>
-                    <Switch
-                      value={driverOnline}
-                      onValueChange={setDriverOnline}
-                      trackColor={{ false: '#CBD5E1', true: '#86EFAC' }}
-                      thumbColor={driverOnline ? '#16A34A' : '#F8FAFC'}
-                    />
-                  </View>
                   <Pressable style={styles.historyBtn} onPress={() => setShowHistory(true)}>
+                    <Text style={styles.historyBtnEyebrow}>Driver tools</Text>
                     <Text style={styles.historyBtnText}>View Ride History</Text>
-                                    <Pressable style={[styles.historyBtn, {backgroundColor: '#F59E0B'}]} onPress={() => { load28DayEarnings(); setShowEarningsPage(true); }}>
-                                      <Text style={styles.historyBtnText}>View 28-Day Earnings</Text>
-                                    </Pressable>
+                    <Text style={styles.historyBtnSubtext}>Check completed trips, cancellations, and trip details</Text>
                   </Pressable>
                   {!!driverVehicle && (
                     <Pressable
@@ -4084,7 +4074,7 @@ function RideAppScreen() {
       )}
       
       {mode === 'USER' && !!location && !userBookedRide && !isPassengerCardExpanded && (
-        <Pressable style={styles.currentLocFab} onPress={focusOnCurrentLocation}>
+        <Pressable style={[styles.currentLocFab, { bottom: 235 + CURRENT_LOC_FAB_RISE + bottomSafeSpacing }]} onPress={focusOnCurrentLocation}>
           <Text style={styles.currentLocFabText}>⌖</Text>
         </Pressable>
       )}
@@ -4993,7 +4983,18 @@ function RideAppScreen() {
               <View>
                 <View style={styles.row}>
                     <Text style={styles.sectionTitle}>Available ({searchRadius}km)</Text>
-                    <TouchableOpacity onPress={() => setIsIdentitySet(false)}><Text style={{color:'#007AFF'}}>Profile</Text></TouchableOpacity>
+                </View>
+                <View style={[styles.driverAvailabilityCard, { marginTop: 12, marginBottom: 12 }]}> 
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.driverAvailabilityTitle}>Ride Requests</Text>
+                    <Text style={styles.driverAvailabilityHint}>{driverOnline ? 'You are online and receiving requests' : 'You are offline and hidden from requests'}</Text>
+                  </View>
+                  <Switch
+                    value={driverOnline}
+                    onValueChange={setDriverOnline}
+                    trackColor={{ false: '#CBD5E1', true: '#86EFAC' }}
+                    thumbColor={driverOnline ? '#16A34A' : '#F8FAFC'}
+                  />
                 </View>
                 {(visibleDriverRides.length === 0 || (penalty !== "CLEAR" && penalty !== "WARNING" && penalty !== "BEHAVIOR_WARNING")) ? (
                   <Text style={styles.emptyText}>
@@ -5299,9 +5300,9 @@ function RideAppScreen() {
       </Modal>
 
       <Modal visible={showRideStartedGameModal} animationType="slide" onRequestClose={() => {
-          setShowRideStartedGameModal(false);
-          setShowRideHomeButton(true);
-        }}>
+        setShowRideStartedGameModal(false);
+        setShowRideHomeButton(true);
+      }}>
         <View style={styles.rideGameWrap}>
           <View style={styles.rideGameHeader}>
             <Pressable onPress={() => {
@@ -5337,22 +5338,16 @@ function RideAppScreen() {
             <View style={styles.rideRoadArea}>
               <View style={styles.rideRoadStripe} />
               {rideGameObstacles.map((obs) => (
-                <View key={obs.id} style={[styles.rideObstacle, { left: `${obs.x}%`, top: `${obs.y}%` }]}> 
+                <View key={obs.id} style={[styles.rideObstacle, { left: `${obs.x}%`, top: `${obs.y}%` }]}>
                   <Text style={styles.rideObstacleText}>🚧</Text>
                 </View>
               ))}
               <Text style={[styles.rideAutoIcon, { left: `${Math.min(82, Math.max(8, 50 + rideGameSteer))}%` }]}>🛺</Text>
             </View>
 
-            {rideGameStatus === 'crashed' && (
-              <Text style={styles.rideCrashText}>Crash detected! Tap Retry and steer away from the next obstacle.</Text>
-            )}
-            {rideGameStatus === 'finished' && (
-              <Text style={styles.rideFinishedText}>Nice! You finished the route safely.</Text>
-            )}
-            {rideGameStatus === 'gameover' && (
-              <Text style={styles.rideCrashText}>Game over! You have no lives left.</Text>
-            )}
+            {rideGameStatus === 'crashed' && <Text style={styles.rideCrashText}>Crash detected! Tap Retry and steer away from the next obstacle.</Text>}
+            {rideGameStatus === 'finished' && <Text style={styles.rideFinishedText}>Nice! You finished the route safely.</Text>}
+            {rideGameStatus === 'gameover' && <Text style={styles.rideCrashText}>Game over! You have no lives left.</Text>}
 
             <View style={styles.rideControlRow}>
               <Pressable
