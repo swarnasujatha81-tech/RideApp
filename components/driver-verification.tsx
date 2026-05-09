@@ -132,6 +132,13 @@ export default function DriverVerificationButtons({
   const [rcUri, setRcUri] = useState<string | null>(null);
   const [licenseUri, setLicenseUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const isElectricCycle = vehicleType === 'Cycle';
+  const primaryDocumentLabel = isElectricCycle ? 'Aadhar card' : 'RC';
+  const secondaryDocumentLabel = isElectricCycle ? 'PAN card' : 'driving licence';
+  const primaryDocumentShortLabel = isElectricCycle ? 'Aadhar' : 'RC';
+  const secondaryDocumentShortLabel = isElectricCycle ? 'PAN' : 'Licence';
+  const primaryDocumentHint = isElectricCycle ? 'Front side or clearly readable photo' : 'Vehicle registration certificate';
+  const secondaryDocumentHint = 'Front side or clearly readable photo';
 
   const [showBack, setShowBack] = useState(true);
   useEffect(() => {
@@ -151,7 +158,7 @@ export default function DriverVerificationButtons({
   async function handleUploadAndSave() {
     if (uploading) return;
     if (!rcUri || !licenseUri) {
-      Alert.alert('Missing documents', 'Please pick both RC and Driving License images before uploading.');
+      Alert.alert('Missing documents', `Please pick both ${primaryDocumentShortLabel} and ${secondaryDocumentShortLabel} images before uploading.`);
       return;
     }
 
@@ -168,8 +175,8 @@ export default function DriverVerificationButtons({
         throw new Error('Please login again before submitting driver documents.');
       }
 
-      const rcPath = `drivers/${examplePhone}/${ownerUid}/rc_${timestamp}.jpg`;
-      const licensePath = `drivers/${examplePhone}/${ownerUid}/license_${timestamp}.jpg`;
+      const rcPath = `drivers/${examplePhone}/${ownerUid}/${isElectricCycle ? 'aadhar' : 'rc'}_${timestamp}.jpg`;
+      const licensePath = `drivers/${examplePhone}/${ownerUid}/${isElectricCycle ? 'pan' : 'license'}_${timestamp}.jpg`;
 
       const [rcUrl, licenseUrl] = await Promise.all([
         uploadImage(rcUri, rcPath),
@@ -223,7 +230,9 @@ export default function DriverVerificationButtons({
         <Text style={styles.kicker}>Driver verification</Text>
         <Text style={styles.heading}>Upload your documents to go live</Text>
         <Text style={styles.subheading}>
-          Submit your RC and driving licence once. We verify your request manually before driver access is enabled.
+          {isElectricCycle
+            ? 'Submit your Aadhar and PAN card once. We verify your request manually before driver access is enabled.'
+            : 'Submit your RC and driving licence once. We verify your request manually before driver access is enabled.'}
         </Text>
       </View>
 
@@ -242,8 +251,8 @@ export default function DriverVerificationButtons({
 
           <Pressable style={styles.documentButton} onPress={() => pick('rc')}>
             <View style={styles.documentButtonTextWrap}>
-              <Text style={styles.documentButtonTitle}>{rcUri ? 'RC selected' : 'Choose RC from gallery'}</Text>
-              <Text style={styles.documentButtonSubtitle}>Vehicle registration certificate</Text>
+              <Text style={styles.documentButtonTitle}>{rcUri ? `${primaryDocumentShortLabel} selected` : `Choose ${primaryDocumentLabel} from gallery`}</Text>
+              <Text style={styles.documentButtonSubtitle}>{primaryDocumentHint}</Text>
             </View>
             <Text style={styles.documentAction}>{rcUri ? 'Replace' : 'Select'}</Text>
           </Pressable>
@@ -251,8 +260,8 @@ export default function DriverVerificationButtons({
 
           <Pressable style={[styles.documentButton, { marginTop: 14 }]} onPress={() => pick('license')}>
             <View style={styles.documentButtonTextWrap}>
-              <Text style={styles.documentButtonTitle}>{licenseUri ? 'Licence selected' : 'Choose driving licence from gallery'}</Text>
-              <Text style={styles.documentButtonSubtitle}>Front side or clearly readable photo</Text>
+              <Text style={styles.documentButtonTitle}>{licenseUri ? `${secondaryDocumentShortLabel} selected` : `Choose ${secondaryDocumentLabel} from gallery`}</Text>
+              <Text style={styles.documentButtonSubtitle}>{secondaryDocumentHint}</Text>
             </View>
             <Text style={styles.documentAction}>{licenseUri ? 'Replace' : 'Select'}</Text>
           </Pressable>

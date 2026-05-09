@@ -115,28 +115,19 @@ function RideAppScreen() {
         contact: driverPhone || profilePhone || '',
       },
       theme: { color: '#0B1020' },
-      modal: {
-        ondismiss: function () {
-          (window as any).ReactNativeWebView?.postMessage(JSON.stringify({ type: 'dismiss' }));
-        },
-      },
-      handler: function (response: any) {
-        (window as any).ReactNativeWebView?.postMessage(JSON.stringify({ type: 'success', payload: response }));
-      },
     };
 
     return `
       <!doctype html>
       <html>
         <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
           <style>
-            body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(180deg, #07111F 0%, #0B1020 100%); color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-            .card { width: calc(100% - 32px); max-width: 420px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 28px; padding: 24px; box-sizing: border-box; box-shadow: 0 18px 60px rgba(0,0,0,0.32); }
-            .eyebrow { display: inline-block; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: #B7C7FF; margin-bottom: 12px; }
-            h1 { margin: 0 0 10px; font-size: 28px; line-height: 1.15; }
-            p { margin: 0; color: #D4DAF0; line-height: 1.6; font-size: 14px; }
-            .price { margin: 18px 0 6px; font-size: 42px; font-weight: 900; }
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background: #08111F; color: #E6EEF8; margin: 0; padding: 24px; }
+            .card { background: linear-gradient(180deg,#0B1220 0%, #08111F 100%); border-radius: 16px; padding: 24px; max-width: 540px; margin: 32px auto; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+            .eyebrow { color: #9FB3D6; font-weight: 700; margin-bottom: 8px; }
+            h1 { margin: 0 0 8px 0; font-size: 22px; color: #FFF; }
+            .price { font-weight: 800; font-size: 28px; margin-top: 8px; color: #fff; }
             .meta { color: #B8C6E6; font-size: 13px; margin-bottom: 18px; }
             .button { background: #FFFFFF; color: #08111F; border-radius: 16px; padding: 14px 18px; text-align: center; font-weight: 800; }
           </style>
@@ -146,7 +137,7 @@ function RideAppScreen() {
           <div class="card">
             <div class="eyebrow">Driver access approved</div>
             <h1>Pay to unlock driver features</h1>
-            <p>Your documents are verified. Complete this one-time payment to activate ride notifications and driver tools for 28 days.</p>
+            <p>Your documents are verified. Complete this one-time payment to activate ride notifications and driver tools for ${DRIVER_SUBSCRIPTION_DAYS} days.</p>
             <div class="price">₹${amountInRupees}</div>
             <div class="meta">Single payment • ${DRIVER_SUBSCRIPTION_DAYS} days access</div>
             <div class="button">Opening secure checkout...</div>
@@ -712,13 +703,15 @@ function RideAppScreen() {
     Animated.spring(passengerCardTranslateY, {
       toValue: expand ? -passengerCardPullUpMax : 0,
       useNativeDriver: true,
-      bounciness: 2,
-      speed: 16,
+      bounciness: 6,
+      speed: 10,
     }).start();
   }, [passengerCardPullUpMax, passengerCardTranslateY]);
 
   const passengerCardPanResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 6,
+    onStartShouldSetPanResponder: () => isPassengerCardExpanded,
+    onStartShouldSetPanResponderCapture: () => isPassengerCardExpanded,
+    onMoveShouldSetPanResponder: (_, gestureState) => isPassengerCardExpanded ? Math.abs(gestureState.dy) > 1 : Math.abs(gestureState.dy) > 2,
     onPanResponderGrant: () => {
       passengerCardTranslateY.stopAnimation((val) => {
         passengerCardDragStartRef.current = val;
@@ -730,10 +723,10 @@ function RideAppScreen() {
     },
     onPanResponderRelease: (_, gestureState) => {
       const endVal = Math.max(-passengerCardPullUpMax, Math.min(0, passengerCardDragStartRef.current + gestureState.dy));
-      const shouldCollapse = endVal > -(passengerCardPullUpMax * 0.62) || gestureState.vy > 0.45;
+      const shouldCollapse = endVal > -(passengerCardPullUpMax * 0.62) || gestureState.vy > 0.25;
       const shouldExpand = isPassengerCardExpanded
         ? !shouldCollapse
-        : endVal < -(passengerCardPullUpMax * 0.42) || gestureState.vy < -0.45;
+        : endVal < -(passengerCardPullUpMax * 0.42) || gestureState.vy < -0.25;
       animatePassengerCard(shouldExpand);
     },
     onPanResponderTerminate: () => {
@@ -875,20 +868,26 @@ function RideAppScreen() {
       Alert.alert('Required', 'Type your question first.');
       return;
     }
+    if (!currentUserId) {
+      Alert.alert('Sign in required', 'Please sign in again and try posting your question.');
+      return;
+    }
     try {
       await addDoc(collection(db, 'helpForum'), {
         question,
+        askedByUid: currentUserId,
         askedByName: profileName || 'Passenger',
         askedByPhone: profilePhone || '',
-        askedByEmail: auth.currentUser?.email || email || '',
+        askedByEmail: auth.currentUser?.email ?? null,
         createdAtMs: Date.now(),
         answers: [],
       });
       setHelpQuestionText('');
-    } catch {
-      Alert.alert('Send failed', 'Could not submit question. Please try again.');
+    } catch (error: any) {
+      const message = String(error?.message || 'Could not submit question. Please try again.');
+      Alert.alert('Send failed', message);
     }
-  }, [email, helpQuestionText, profileName, profilePhone]);
+  }, [currentUserId, email, helpQuestionText, profileName, profilePhone]);
 
   const postHelpAnswer = useCallback(async (questionId: string) => {
     const answer = (helpAnswerDrafts[questionId] || '').trim();
@@ -898,9 +897,10 @@ function RideAppScreen() {
       await updateDoc(doc(db, 'helpForum', questionId), {
         answers: arrayUnion({
           text: answer,
+          byUid: currentUserId,
           byName: profileName || 'Passenger',
           byPhone: profilePhone || '',
-          byEmail: auth.currentUser?.email || email || '',
+          byEmail: auth.currentUser?.email ?? null,
           createdAtMs: Date.now(),
         }),
       });
@@ -2034,7 +2034,7 @@ function RideAppScreen() {
 
           try {
             const initial = await Promise.race<Location.LocationObject | null>([
-              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
               new Promise<Location.LocationObject | null>((resolve) => setTimeout(() => resolve(null), 4500)),
             ]);
 
@@ -2045,7 +2045,7 @@ function RideAppScreen() {
             if (mounted && !lastKnown) setIsFetchingCurrentLocation(false);
           }
 
-          locationSubscription = await Location.watchPositionAsync({ distanceInterval: 10 }, (loc) => {
+          locationSubscription = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Highest, distanceInterval: 5, timeInterval: 1000 }, (loc) => {
             if (!mounted) return;
             setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
           });
@@ -4517,17 +4517,22 @@ function RideAppScreen() {
                 <View style={{padding: 10}}>
                     <Text style={styles.sectionTitle}>Pick your vehicle</Text>
                     <View style={styles.grid}>
-                        {(['Bike', 'Cycle', 'Auto', 'Cab'] as DriverVehicleType[]).map(v => (
+                        {([
+                          { value: 'Bike', label: 'Bike' },
+                          { value: 'Cycle', label: 'Electric Cycle' },
+                          { value: 'Auto', label: 'Auto' },
+                          { value: 'Cab', label: 'Cab' },
+                        ] as const).map(v => (
                             <Pressable
-                              key={v}
+                              key={v.value}
                               style={styles.rideCard}
                               onPress={async () => {
                                 playUiTapSound('vehicle');
-                                setDriverVehicle(v);
-                                await AsyncStorage.setItem('driver_vehicle', v);
+                                setDriverVehicle(v.value as DriverVehicleType);
+                                await AsyncStorage.setItem('driver_vehicle', v.value);
                                 if (driverDocId) {
                                   await setDoc(doc(db, 'drivers', driverDocId), {
-                                    vehicleType: v,
+                                    vehicleType: v.value,
                                     vehicleTypeUpdatedAt: Timestamp.now(),
                                   }, { merge: true });
                                   if (driverVerified && driverSubscriptionActive) {
@@ -4536,7 +4541,7 @@ function RideAppScreen() {
                                 }
                               }}
                             >
-                                <Text style={{fontSize: 30}}>{icons[v]}</Text><Text>{v}</Text>
+                                <Text style={{fontSize: 30}}>{icons[v.value]}</Text><Text>{v.label}</Text>
                             </Pressable>
                         ))}
                     </View>
@@ -4595,7 +4600,9 @@ function RideAppScreen() {
                               <Text style={styles.pendingText}>Please wait for 8 hours. Our team will respond to you within 8 hours.</Text>
                               <View style={styles.pendingCard}>
                                 <Text style={styles.pendingCardTitle}>What happens next</Text>
-                                <Text style={styles.pendingCardText}>We review your RC and driving licence manually. Once approved, driver access is unlocked automatically.</Text>
+                                <Text style={styles.pendingCardText}>{driverVehicle === 'Cycle'
+                                  ? 'We review your Aadhar and PAN card manually. Once approved, driver access is unlocked automatically.'
+                                  : 'We review your RC and driving licence manually. Once approved, driver access is unlocked automatically.'}</Text>
                               </View>
                             </View>
                           ) : (
@@ -5275,7 +5282,7 @@ function RideAppScreen() {
               ) : helpQuestions.map((q) => (
                 <View key={q.id} style={styles.profileHistoryRow}>
                   <Text style={styles.profileHistoryRoute}>{q.question}</Text>
-                  <Text style={styles.profileHistoryStatus}>Asked by {q.askedByName} • {q.askedByPhone || 'N/A'}</Text>
+                  <Text style={styles.profileHistoryStatus}>Asked by {q.askedByName || 'Passenger'}</Text>
                   {(q.answers || []).slice().sort((a, b) => (a.createdAtMs || 0) - (b.createdAtMs || 0)).map((ans, idx) => (
                     <Text key={`${q.id}_ans_${idx}`} style={[styles.profileHistoryStatus, { color: '#155E75' }]}>• {ans.byName}: {ans.text}</Text>
                   ))}
