@@ -27,6 +27,10 @@ interface RideHistoryItem {
   driverName?: string;
   passengerId?: string;
   passengerName?: string;
+  distance?: number;
+  pickupTimeMs?: number;
+  dropTimeMs?: number;
+  totalTimeMinutes?: number;
   createdAt?: any;
 };
 
@@ -71,6 +75,10 @@ export default function HistoryScreen({ route }: HistoryScreenProps) {
               </Text>
             </View>
             <Text style={{ color: '#666', marginBottom: 4 }}>₹{item.fare} • {item.rideType}</Text>
+            {typeof item.distance === 'number' && <Text style={{ color: '#666', fontSize: 12 }}>Distance: {item.distance.toFixed(1)} km</Text>}
+            {typeof item.totalTimeMinutes === 'number' && <Text style={{ color: '#666', fontSize: 12 }}>Time: {item.totalTimeMinutes} min</Text>}
+            {item.pickupTimeMs && <Text style={{ color: '#666', fontSize: 12 }}>Pickup: {new Date(item.pickupTimeMs).toLocaleString()}</Text>}
+            {item.dropTimeMs && <Text style={{ color: '#666', fontSize: 12 }}>Drop: {new Date(item.dropTimeMs).toLocaleString()}</Text>}
             {item.cancelledBy && (
               <Text style={{ color: '#FF6B35', fontSize: 12 }}>Cancelled by {item.cancelledBy}</Text>
             )}

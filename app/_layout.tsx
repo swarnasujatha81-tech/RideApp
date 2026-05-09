@@ -7,6 +7,7 @@ import 'react-native-reanimated';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useNotifications } from '@/hooks/use-notifications';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
 import { installGlobalErrorLogger } from '@/lib/global-error-logger';
 
@@ -40,6 +41,9 @@ function RootNavigator() {
   const router = useRouter();
   const segments = useSegments();
   const { user, initializing } = useAuth();
+
+  // Initialize notifications after user is authenticated
+  useNotifications();
 
   useEffect(() => {
     if (initializing) return;

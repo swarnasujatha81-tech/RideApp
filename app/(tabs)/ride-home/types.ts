@@ -6,6 +6,7 @@ export interface Ride {
   fare: number; baseFare: number; tip: number; 
   distance: number; pickup: Coord; drop: Coord; encryptedOTP: string;
   acceptedAtMs?: number;
+  startedAtMs?: number;
   pickupReachMinutes?: number;
   pickupAddr?: string; dropAddr?: string;
   passengerId?: string;
@@ -99,6 +100,11 @@ export interface RideHistory {
   driverName?: string;
   passengerId?: string;
   passengerName?: string;
+  distance?: number;
+  pickupTimeMs?: number;
+  dropTimeMs?: number;
+  totalTimeMinutes?: number;
+  billGeneratedAtMs?: number;
   appFeeToApp?: number;
   driverPayout?: number;
   hiddenEarnSurcharge?: number;

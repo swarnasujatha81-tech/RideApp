@@ -68,14 +68,6 @@ export async function saveDriverRecord(payload: {
 
   const docRef = doc(db, 'drivers', normalizedPhone);
   const existing = await getDoc(docRef);
-  if (existing.exists()) {
-    const existingData = existing.data();
-    if (existingData?.isVerified) {
-      const error = new Error('This number is already verified.');
-      (error as Error & { code?: string }).code = 'driver-already-submitted';
-      throw error;
-    }
-  }
 
   await setDoc(docRef, {
     name: payload.name,
@@ -91,6 +83,7 @@ export async function saveDriverRecord(payload: {
     licenseImageUrl: payload.licenseImageUrl,
     isVerified: false,
     verificationStatus: 'pending',
+    lastSubmittedAt: serverTimestamp(),
     subscriptionActive: false,
     submittedAt: serverTimestamp(),
     ...(existing.exists() ? {} : { createdAt: serverTimestamp() }),
@@ -269,7 +262,7 @@ export default function DriverVerificationButtons({
 
           <View style={styles.noticeBox}>
             <Text style={styles.noticeTitle}>Important</Text>
-            <Text style={styles.noticeText}>Your OTP verified mobile number and name are saved with these files. Next time, the same number can restore driver access on another mobile.</Text>
+            <Text style={styles.noticeText}>You can upload documents again from another phone or account using the same mobile number. The latest accepted submission becomes active.</Text>
           </View>
 
           <Pressable style={styles.submitButton} onPress={handleUploadAndSave} disabled={uploading}>

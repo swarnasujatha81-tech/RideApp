@@ -6,14 +6,16 @@ import { onAuthStateChanged, PhoneAuthProvider, signInWithCredential, signOut } 
 import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Share, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
+import BlockedAccount from '../../components/blocked-account';
 import DriverVerificationButtons from '../../components/driver-verification';
 import FirebaseRecaptchaVerifier from '../../components/firebase-recaptcha-verifier';
 import OSMMapView, { OSMMapViewRef } from '../../components/osm-map-view';
 import { useAuth } from '../../lib/auth-context';
 import { FARE_ADJUSTMENTS, SHARE_AUTO_FARE_SETTINGS } from '../../lib/fare-settings';
+import { NotificationService } from '../../lib/notification-service';
 import { AppErrorBoundary } from './ride-home/AppErrorBoundary';
 import { ACTIVE_RIDE_BUTTON_HEIGHT, ACTIVE_RIDE_BUTTON_WIDTH, CHAT_SOUND_URL, CURRENT_LOC_FAB_RISE, DEFAULT_MAP_REGION, DRIVER_ALERT_SOUND_URL, DRIVER_DESTINATION_MARKER_RADIUS_KM, DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT, DRIVER_SUBSCRIPTION_AMOUNT, DRIVER_SUBSCRIPTION_DAYS, EARN_REWARD_AMOUNT, FIVE_MIN_MS, GAME_BIRD_HIT_SOUND_URL, GAME_UNLOCK_SOUND_URL, GAME_ZOMBIE_HIT_SOUND_URL, HYDERABAD_SERVICE_RADIUS_KM, icons, MARKER_PLACE_SOUND_URL, PRIMARY_ACTION_SOUND_URL, RAZORPAY_KEY_ID, SCREEN_HEIGHT, SCREEN_WIDTH, VEHICLE_SELECT_SOUND_URL } from './ride-home/constants';
 import { auth, db, firebaseConfig, storage } from './ride-home/firebase-core';
@@ -24,6 +26,31 @@ import { calcSegmentEtaMinutes, findShareAutoMatch, toPoolPassenger } from './ri
 import { styles } from './ride-home/styles';
 import type { ChatMessage, Coord, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoPool } from './ride-home/types';
 import { isActiveRideStatus } from './ride-home/types';
+
+type RideBillRecord = RideHistory & {
+  distance?: number;
+  pickupTimeMs?: number;
+  dropTimeMs?: number;
+  totalTimeMinutes?: number;
+  billGeneratedAtMs?: number;
+};
+
+const formatBillTime = (value?: number) => (value ? new Date(value).toLocaleString() : 'N/A');
+
+const buildRideBillShareMessage = (bill: RideBillRecord) => [
+  'RideApp Trip Bill',
+  `Fare: ₹${bill.fare}`,
+  `Pickup: ${bill.pickupAddr || 'Pickup'}`,
+  `Drop: ${bill.dropAddr || 'Drop'}`,
+  `Distance: ${typeof bill.distance === 'number' ? `${bill.distance.toFixed(1)} km` : 'N/A'}`,
+  `Total time: ${typeof bill.totalTimeMinutes === 'number' ? `${bill.totalTimeMinutes} min` : 'N/A'}`,
+  `Pickup time: ${formatBillTime(bill.pickupTimeMs)}`,
+  `Drop time: ${formatBillTime(bill.dropTimeMs)}`,
+  `Driver: ${bill.driverName || 'Driver'}`,
+  `Passenger: ${bill.passengerName || 'Passenger'}`,
+].join('\n');
+
+const buildRideBillShareUrl = (bill: RideBillRecord) => `whatsapp://send?text=${encodeURIComponent(buildRideBillShareMessage(bill))}`;
 
 function RideAppScreen() {
   const { initializing: authInitializing } = useAuth();
@@ -46,6 +73,9 @@ function RideAppScreen() {
   const [driverVerified, setDriverVerified] = useState(false);
   const [driverSubscriptionActive, setDriverSubscriptionActive] = useState(false);
   const [driverSubscriptionExpiresAt, setDriverSubscriptionExpiresAt] = useState<Timestamp | null>(null);
+  const [driverBanned, setDriverBanned] = useState(false);
+  const [bannedMessage, setBannedMessage] = useState('');
+  const [showBlockedModal, setShowBlockedModal] = useState(false);
   const [showDriverVerification, setShowDriverVerification] = useState(false);
   const [waitingForVerification, setWaitingForVerification] = useState(false);
   const [showDriverPaymentModal, setShowDriverPaymentModal] = useState(false);
@@ -59,6 +89,8 @@ function RideAppScreen() {
   const [farePenalty, setFarePenalty] = useState(0);
   const [driverPhotoUrl, setDriverPhotoUrl] = useState('');
   const [driverPhotoUri, setDriverPhotoUri] = useState('');
+  const [showRideBillModal, setShowRideBillModal] = useState(false);
+  const [activeRideBill, setActiveRideBill] = useState<RideBillRecord | null>(null);
 
   // INDIVIDUAL DRIVER STATS [cite: 165]
   const [driverStats, setDriverStats] = useState({ 
@@ -99,6 +131,34 @@ function RideAppScreen() {
   const deviceInstallIdRef = useRef('');
   const otpClaimPhoneRef = useRef('');
   const driverSessionMovedRef = useRef(false);
+  const driverRideBillSeenRef = useRef('');
+  const passengerRideBillSeenRef = useRef('');
+  const driverRideBillPrimedRef = useRef(false);
+  const passengerRideBillPrimedRef = useRef(false);
+
+  const openRideBill = useCallback((bill: RideBillRecord) => {
+    if (!bill.id) return;
+    setActiveRideBill(bill);
+    setShowRideBillModal(true);
+  }, []);
+
+  const maybeOpenRideBillFromHistory = useCallback((history: RideHistory[], role: 'DRIVER' | 'PASSENGER') => {
+    const latestCompleted = history.find((entry) => entry.status === 'completed' && !!entry.id);
+    const seenRef = role === 'DRIVER' ? driverRideBillSeenRef : passengerRideBillSeenRef;
+    const primedRef = role === 'DRIVER' ? driverRideBillPrimedRef : passengerRideBillPrimedRef;
+
+    if (!primedRef.current) {
+      primedRef.current = true;
+      seenRef.current = latestCompleted?.id || '';
+      return;
+    }
+
+    if (latestCompleted?.id && latestCompleted.id !== seenRef.current) {
+      seenRef.current = latestCompleted.id;
+      openRideBill(latestCompleted as RideBillRecord);
+    }
+  }, [openRideBill]);
+
   const postDriverCheckoutMessage = (message: string) => {
     (window as any).ReactNativeWebView?.postMessage(message);
   };
@@ -315,6 +375,25 @@ function RideAppScreen() {
       }
 
       await applyDriverRecordToState(driverDocId, data);
+      const isBanned = !!data?.banned;
+      if (isBanned) {
+        const defaultMsg = 'your account was blocked by admin due to some issues like extra money asked or abusing or etc. please contact our service number 9642395617 to know more.';
+        setDriverBanned(true);
+        setBannedMessage(data?.bannedMessage || defaultMsg);
+        setShowBlockedModal(true);
+        setIsIdentitySet(false);
+        setDriverSubscriptionActive(false);
+        try {
+          await NotificationService.clearAllNotifications();
+        } catch (e) {
+          // ignore
+        }
+        return;
+      } else if (driverBanned) {
+        setDriverBanned(false);
+        setBannedMessage('');
+        setShowBlockedModal(false);
+      }
       const isVerified = !!data?.isVerified;
       const subscriptionExpiresAt = data?.subscriptionExpiresAt ?? null;
       const subscriptionExpiresAtMs = subscriptionExpiresAt?.toMillis?.() ?? 0;
@@ -2260,6 +2339,7 @@ function RideAppScreen() {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
       list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
       setDriverHistory(list);
+      maybeOpenRideBillFromHistory(list, 'DRIVER');
       const payableAmount = list.reduce((sum, item) => sum + (item.appFeeToApp || 0), 0);
       setDriverPayableToApp(Math.max(0, Math.round(payableAmount)));
       const pickupTimes = list
@@ -2287,11 +2367,12 @@ function RideAppScreen() {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
       list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
       setPassengerHistory(list);
+      maybeOpenRideBillFromHistory(list, 'PASSENGER');
     }, () => {
       setPassengerHistory([]);
     });
     return unsub;
-  }, [mode, currentUserId]);
+  }, [mode, currentUserId, maybeOpenRideBillFromHistory]);
 
   useEffect(() => {
     if (mode !== 'DRIVER' || !driverOnline || !driverVehicle || !isIdentitySet || !!currentRide) return;
@@ -3060,8 +3141,8 @@ function RideAppScreen() {
       Alert.alert('Select a ride type', 'Please choose a ride option to continue.');
       return;
     }
-    if (!pickupCoords || pickupInput === 'Current Location') {
-      Alert.alert('Pickup location required', 'Please select or confirm your pickup location.');
+    if (!pickupCoords) {
+      Alert.alert('Pickup location required', 'Please wait for current location or choose a pickup point on the map.');
       return;
     }
     if (!destCoords || !destination) {
@@ -3175,8 +3256,48 @@ function RideAppScreen() {
       ...(typeof settlement?.appFeeToApp === 'number' && settlement.appFeeToApp > 0 ? { hiddenEarnSurcharge: settlement.appFeeToApp } : {}),
     };
 
-    await addDoc(collection(db, 'rideHistory'), historyPayload);
+    const pickupTimeMs = ride.startedAtMs || ride.acceptedAtMs || getRideCreatedAtMs(ride.createdAt) || Date.now();
+    const dropTimeMs = Date.now();
+    const totalTimeMinutes = status === 'completed' ? Math.max(1, Math.round((dropTimeMs - pickupTimeMs) / 60000)) : undefined;
+    const distance = typeof ride.comboTotalDistance === 'number'
+      ? ride.comboTotalDistance
+      : typeof ride.distance === 'number'
+        ? ride.distance
+        : undefined;
+
+    if (status === 'completed') {
+      historyPayload.distance = distance;
+      historyPayload.pickupTimeMs = pickupTimeMs;
+      historyPayload.dropTimeMs = dropTimeMs;
+      historyPayload.totalTimeMinutes = totalTimeMinutes;
+      historyPayload.billGeneratedAtMs = dropTimeMs;
+    }
+
+    const historyRef = await addDoc(collection(db, 'rideHistory'), historyPayload);
+    return { id: historyRef.id, ...historyPayload } as RideBillRecord;
   };
+
+  const shareRideBill = useCallback(async () => {
+    if (!activeRideBill) return;
+
+    const message = buildRideBillShareMessage(activeRideBill);
+    try {
+      const whatsappUrl = buildRideBillShareUrl(activeRideBill);
+      const canOpenWhatsapp = await Linking.canOpenURL(whatsappUrl);
+      if (canOpenWhatsapp) {
+        await Linking.openURL(whatsappUrl);
+        return;
+      }
+    } catch {
+      // Fall back to the native share sheet below.
+    }
+
+    try {
+      await Share.share({ message, title: 'Ride bill' });
+    } catch {
+      Alert.alert('Share failed', 'Could not share this bill right now.');
+    }
+  }, [activeRideBill]);
 
   const uploadDriverPhoto = async (uri: string) => {
     try {
@@ -3750,7 +3871,9 @@ function RideAppScreen() {
 
     if (completedDrops.length >= allPassengerCount && allPassengerCount > 0) {
       const totalShareFare = (currentRide.shareAutoPassengerFares || []).reduce((sum, x) => sum + x, 0) || currentRide.fare;
-      await addRideHistoryEntry(currentRide, 'completed');
+      const bill = await addRideHistoryEntry(currentRide, 'completed');
+      driverRideBillSeenRef.current = bill.id || driverRideBillSeenRef.current;
+      openRideBill(bill);
       setDriverStats(prev => ({ ...prev, completed: prev.completed + 1, earnings: prev.earnings + totalShareFare }));
       await deleteDoc(doc(db, 'rides', currentRide.id));
       setCurrentRide(null);
@@ -3865,6 +3988,14 @@ function RideAppScreen() {
 
   return (
     <View style={styles.container}>
+        {driverBanned && (
+          <BlockedAccount
+            visible={showBlockedModal}
+            message={bannedMessage || 'your account was blocked by admin due to some issues like extra money asked or abusing or etc. please contact our service number 9642395617 to know more.'}
+            contact={'9642395617'}
+            onClose={() => setShowBlockedModal(false)}
+          />
+        )}
       {mode === 'USER' ? (
           (!userBookedRide || showRideHomeButton) ? (
             <OSMMapView
@@ -4818,6 +4949,7 @@ function RideAppScreen() {
                               await updateRideSafely(currentRide.id, {
                                 comboStage: 'passenger_drop',
                                 status: 'started',
+                                startedAtMs: Date.now(),
                                 ...(currentRide.pickupReachMinutes ? {} : { pickupReachMinutes: getPickupReachMinutes(currentRide) }),
                               }, () => {
                                 setCurrentRide(null);
@@ -4919,6 +5051,7 @@ function RideAppScreen() {
                              if(decryptOTP(currentRide.encryptedOTP) === otpInput) {
                                 await updateRideSafely(currentRide.id, {
                                   status: 'started',
+                                  startedAtMs: Date.now(),
                                   ...(currentRide.pickupReachMinutes ? {} : { pickupReachMinutes: getPickupReachMinutes(currentRide) }),
                                 }, () => {
                                   setCurrentRide(null);
@@ -4951,11 +5084,13 @@ function RideAppScreen() {
                                     const settlement = await settleEarnFlowForCompletedRide(currentRide);
                                     const comboBasePayout = currentRide.comboTotalFare || ((currentRide.comboParcelFare || 0) + currentRide.fare);
                                     const comboFinalFare = comboBasePayout + settlement.appFeeToApp;
-                                    await addRideHistoryEntry(currentRide, 'completed', undefined, {
+                                    const bill = await addRideHistoryEntry(currentRide, 'completed', undefined, {
                                       finalFare: comboFinalFare,
                                       driverPayout: comboBasePayout,
                                       appFeeToApp: settlement.appFeeToApp,
                                     });
+                                    driverRideBillSeenRef.current = bill.id || driverRideBillSeenRef.current;
+                                    openRideBill(bill);
                                     setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + comboBasePayout}));
                                     await deleteDoc(doc(db, 'rides', currentRide.id!));
                                     setCurrentRide(null);
@@ -4970,7 +5105,9 @@ function RideAppScreen() {
                         <Pressable style={styles.cancelButton} onPress={async () => {
                           if (location && calcDist(location, currentRide.drop) <= 1) {
                                 const settlement = await settleEarnFlowForCompletedRide(currentRide);
-                                await addRideHistoryEntry(currentRide, 'completed', undefined, settlement);
+                                const bill = await addRideHistoryEntry(currentRide, 'completed', undefined, settlement);
+                                driverRideBillSeenRef.current = bill.id || driverRideBillSeenRef.current;
+                                openRideBill(bill);
                                 setDriverStats(prev => ({...prev, completed: prev.completed + 1, earnings: prev.earnings + settlement.driverPayout}));
                                 await deleteDoc(doc(db, 'rides', currentRide.id!));
                                 setCurrentRide(null);
@@ -5439,6 +5576,70 @@ function RideAppScreen() {
         </View>
       </Modal>
 
+      <Modal
+        visible={showRideBillModal}
+        animationType="slide"
+        onRequestClose={() => {
+          setShowRideBillModal(false);
+          setActiveRideBill(null);
+        }}
+      >
+        <View style={{ flex: 1, backgroundColor: '#E8EDF4', padding: 16, paddingTop: 44, paddingBottom: 20 }}>
+          <View style={{ flex: 1, backgroundColor: '#FFFDF7', borderRadius: 28, padding: 18, borderWidth: 1, borderColor: '#D8E0EA', shadowColor: '#0F172A', shadowOpacity: 0.14, shadowRadius: 24, elevation: 10 }}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
+              <View style={{ alignItems: 'center', marginBottom: 16 }}>
+                <Text style={{ color: '#64748B', fontSize: 12, fontWeight: '800', letterSpacing: 2.4 }}>TRIP BILL</Text>
+                <Text style={{ color: '#0F172A', fontSize: 30, fontWeight: '900', marginTop: 6 }}>₹{activeRideBill?.fare?.toFixed ? activeRideBill.fare.toFixed(0) : activeRideBill?.fare || 0}</Text>
+                <Text style={{ color: '#475569', textAlign: 'center', marginTop: 6 }}>Saved to history and ready to share.</Text>
+              </View>
+
+              <View style={{ backgroundColor: '#F8FAFC', borderRadius: 22, padding: 16, borderWidth: 1, borderColor: '#E2E8F0' }}>
+                {[
+                  ['Pickup', activeRideBill?.pickupAddr || 'Pickup'],
+                  ['Drop', activeRideBill?.dropAddr || 'Drop'],
+                  ['Distance', typeof activeRideBill?.distance === 'number' ? `${activeRideBill.distance.toFixed(1)} km` : 'N/A'],
+                  ['Total time', typeof activeRideBill?.totalTimeMinutes === 'number' ? `${activeRideBill.totalTimeMinutes} min` : 'N/A'],
+                  ['Pickup time', formatBillTime(activeRideBill?.pickupTimeMs)],
+                  ['Drop time', formatBillTime(activeRideBill?.dropTimeMs)],
+                  ['Driver', activeRideBill?.driverName || 'Driver'],
+                  ['Passenger', activeRideBill?.passengerName || 'Passenger'],
+                  ['Ride type', activeRideBill?.rideType || 'Ride'],
+                ].map(([label, value]) => (
+                  <View key={label} style={{ borderBottomWidth: label === 'Ride type' ? 0 : 1, borderBottomColor: '#E2E8F0', paddingVertical: 12, flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+                    <Text style={{ color: '#64748B', fontSize: 13, fontWeight: '700' }}>{label}</Text>
+                    <Text style={{ color: '#0F172A', fontSize: 13, fontWeight: label === 'Pickup' || label === 'Drop' ? '700' : '800', textAlign: 'right', flex: 1 }}>{value}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={{ marginTop: 16, backgroundColor: '#0F172A', borderRadius: 22, padding: 16 }}>
+                <Text style={{ color: '#E2E8F0', fontSize: 12, fontWeight: '800', letterSpacing: 1.8 }}>BILL ID</Text>
+                <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginTop: 6 }}>{activeRideBill?.id || 'N/A'}</Text>
+                <Text style={{ color: '#CBD5E1', marginTop: 8, lineHeight: 20 }}>This bill is stored in ride history for later reference and can be shared with one tap.</Text>
+              </View>
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <Pressable
+                style={{ flex: 1, backgroundColor: '#0F766E', borderRadius: 16, paddingVertical: 14, alignItems: 'center' }}
+                onPress={shareRideBill}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: '800' }}>Share Bill</Text>
+              </Pressable>
+              <Pressable
+                style={{ flex: 1, backgroundColor: '#FFFFFF', borderRadius: 16, paddingVertical: 14, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' }}
+                onPress={() => {
+                  setShowRideBillModal(false);
+                  setActiveRideBill(null);
+                }}
+              >
+                <Text style={{ color: '#0F172A', fontWeight: '800' }}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* PASSENGER RIDE HISTORY MODAL */}
       <Modal visible={showPassengerHistoryModal} transparent animationType="slide" onRequestClose={() => setShowPassengerHistoryModal(false)}>
         <View style={styles.modalOverlay}>
@@ -5451,6 +5652,10 @@ function RideAppScreen() {
                 <View key={entry.id} style={styles.historyCard}>
                   <Text style={styles.historyRoute}>{entry.pickupAddr || 'Unknown'} ➔ {entry.dropAddr || 'Unknown'}</Text>
                   <Text style={styles.historyMeta}>{entry.status === 'completed' ? 'Completed' : 'Cancelled'} • ₹{entry.fare}</Text>
+                  {typeof entry.distance === 'number' && <Text style={styles.historyMeta}>Distance: {entry.distance.toFixed(1)} km</Text>}
+                  {typeof entry.totalTimeMinutes === 'number' && <Text style={styles.historyMeta}>Time: {entry.totalTimeMinutes} min</Text>}
+                  {entry.pickupTimeMs && <Text style={styles.historyMeta}>Pickup: {formatBillTime(entry.pickupTimeMs)}</Text>}
+                  {entry.dropTimeMs && <Text style={styles.historyMeta}>Drop: {formatBillTime(entry.dropTimeMs)}</Text>}
                   {!!entry.driverName && <Text style={styles.historyMeta}>Driver: {entry.driverName}</Text>}
                   <Text style={styles.historyMeta}>{entry.createdAt?.toDate ? entry.createdAt.toDate().toLocaleString() : ''}</Text>
                   {!!entry.id && (
