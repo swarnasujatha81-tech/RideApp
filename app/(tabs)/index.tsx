@@ -24,7 +24,7 @@ import { decryptOTP, encryptOTP, generateOTP } from './ride-home/otp';
 import { calculateRideFare, getPricingDemandLevel, type DemandLevel } from './ride-home/pricing';
 import { calcSegmentEtaMinutes, findShareAutoMatch, toPoolPassenger } from './ride-home/shareAutoMatching';
 import { styles } from './ride-home/styles';
-import type { ChatMessage, Coord, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoPool } from './ride-home/types';
+import type { ChatMessage, Coord, Driver, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoPool } from './ride-home/types';
 import { isActiveRideStatus } from './ride-home/types';
 
 type RideBillRecord = RideHistory & {
@@ -117,6 +117,7 @@ function RideAppScreen() {
   const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [selectedRide, setSelectedRide] = useState<RideType | null>(null);
   const [rides, setRides] = useState<Ride[]>([]);
+  const [allDrivers, setAllDrivers] = useState<Driver[]>([]);
   const [ignoredRides, setIgnoredRides] = useState<string[]>([]);
   const [userBookedRide, setUserBookedRide] = useState<Ride | null>(null);
   const [currentRide, setCurrentRide] = useState<Ride | null>(null);
@@ -1423,8 +1424,23 @@ function RideAppScreen() {
   const getDemandLevel = () => getPricingDemandLevel(getDemandFactor);
 
   const getDemandFactor = () => {
-    const activeDemand = rides.filter((r) => r.status === 'waiting').length;
-    return Math.min(1, activeDemand / 12);
+    if (!location) return 0;
+    
+    // Calculate number of waiting passengers within 1.8km radius
+    const nearbyWaitingUsers = rides.filter((r) => 
+      r.status === 'waiting' && 
+      calcDist(location, r.pickup) <= 1.8
+    ).length;
+
+    // Calculate number of online drivers within 1.8km radius
+    const nearbyOnlineDrivers = allDrivers.filter((d) => 
+      d.isOnline && 
+      d.lastLocation && 
+      calcDist(location, d.lastLocation) <= 1.8
+    ).length;
+
+    if (nearbyOnlineDrivers === 0) return 0; // Triggers 'low' demand logic as per requirement
+    return nearbyWaitingUsers / nearbyOnlineDrivers;
   };
 
   const getAppUserFactor = () => {
@@ -1495,11 +1511,8 @@ function RideAppScreen() {
 
   const getDynamicBikeFare = (distanceKm: number) => {
     const demandLevel = getDemandLevel();
-    const tableFare = getBikeFareFromTable(distanceKm, demandLevel);
-    if (tableFare !== null) return tableFare;
-
-    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.bike) * 60);
-    return calculateRideFare('bike', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
+    const now = new Date().getHours();
+    return calculateRideFare('bike', distanceKm, 0, 0, demandLevel, now).finalFare;
   };
 
   const getDynamicParcelFare = (distanceKm: number) => {
@@ -1508,21 +1521,15 @@ function RideAppScreen() {
   };
 
   const getDynamicAutoFare = (distanceKm: number) => {
-    if (distanceKm <= 1.3) return 45;
-    if (distanceKm <= 2) return 65;
-    if (distanceKm <= 3) return 85;
     const demandLevel = getDemandLevel();
-    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.auto) * 60);
-    return calculateRideFare('auto', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
+    const now = new Date().getHours();
+    return calculateRideFare('auto', distanceKm, 0, 0, demandLevel, now).finalFare;
   };
 
   const getDynamicCabFare = (distanceKm: number) => {
-    if (distanceKm <= 1.5) return 65;
-    if (distanceKm <= 2.5) return 100;
-    if (distanceKm <= 3.7) return 150;
     const demandLevel = getDemandLevel();
-    const estimatedTimeMinutes = Math.max(1, (distanceKm / FARE_ADJUSTMENTS.estimatedSpeedKmh.car) * 60);
-    return calculateRideFare('car', distanceKm, estimatedTimeMinutes, 0, demandLevel, new Date().getHours()).finalFare;
+    const now = new Date().getHours();
+    return calculateRideFare('car', distanceKm, 0, 0, demandLevel, now).finalFare;
   };
 
   const getShareAutoDemandIncreaseRate = () => {
@@ -2421,6 +2428,37 @@ function RideAppScreen() {
   }, [userBookedRide?.id, currentRide?.id, currentUserId]);
 
   useEffect(() => {
+    // Subscription to online drivers for demand calculation.
+    // Note: This requires appropriate Firestore security rules to allow reading basic driver info.
+    return onSnapshot(collection(db, 'drivers'), (snapshot) => {
+      const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Driver));
+      setAllDrivers(list);
+    }, () => {
+      setAllDrivers([]);
+    });
+  }, []);
+
+  useEffect(() => {
+    // If current user is a driver and online, periodically update their location in the 'drivers' collection
+    // so that other users can see them and the demand factor is accurate.
+    if (mode !== 'DRIVER' || !driverDocId || !location || !driverOnline) return;
+
+    const updateDriverLocation = async () => {
+      try {
+        await updateDoc(doc(db, 'drivers', driverDocId), {
+          lastLocation: location,
+          isOnline: driverOnline,
+          lastActiveAt: Timestamp.now()
+        });
+      } catch (error) {
+        console.warn('[driver] failed to update location in drivers collection', error);
+      }
+    };
+
+    updateDriverLocation();
+  }, [mode, driverDocId, location, driverOnline]);
+
+  useEffect(() => {
     if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto' || !currentUserId) return;
 
     return onSnapshot(doc(db, 'rides', userBookedRide.id), (snapshot) => {
@@ -2712,15 +2750,18 @@ function RideAppScreen() {
   useEffect(() => {
     if (pickupCoords && destCoords) {
         const dist = calcDist(pickupCoords, destCoords);
+        const demandLevel = getPricingDemandLevel(getDemandFactor);
+        const now = new Date().getHours();
+        
         setFares({
-          Bike: getDynamicBikeFare(dist) + farePenalty,
-          Auto: getDynamicAutoFare(dist) + farePenalty,
-          Cab: getDynamicCabFare(dist) + farePenalty,
+          Bike: calculateRideFare('bike', dist, 0, 0, demandLevel, now).finalFare + farePenalty,
+          Auto: calculateRideFare('auto', dist, 0, 0, demandLevel, now).finalFare + farePenalty,
+          Cab: calculateRideFare('car', dist, 0, 0, demandLevel, now).finalFare + farePenalty,
           ShareAuto: getShareAutoFare(dist, 3) + farePenalty,
           Parcel: getDynamicParcelFare(dist) + farePenalty,
         });
     }
-  }, [destCoords, pickupCoords, rides, farePenalty]);
+  }, [destCoords, pickupCoords, rides, allDrivers, farePenalty]);
 
   const isComboParcelSender = (ride: Ride | null) => !!ride && ride.comboMode === 'PARCEL_PLUS_BIKE' && ride.comboParcelSenderId === currentUserId;
 

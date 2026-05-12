@@ -25,10 +25,11 @@ export interface RideFareQuote {
 
 export const getPricingDemandLevel = (getDemandFactor: () => number): DemandLevel => {
   const demandFactor = getDemandFactor();
-  if (demandFactor < 0.2) return 'low';
-  if (demandFactor < 0.45) return 'normal';
-  if (demandFactor < 0.75) return 'high';
-  return 'peak';
+
+  // Passenger-per-driver ratio within 1.8km radius.
+  if (!Number.isFinite(demandFactor) || demandFactor <= 9) return 'low';
+  if (demandFactor > 9 && demandFactor < 16) return 'normal';
+  return 'high';
 };
 
 export const getSurgeMultiplier = (demandLevel: DemandLevel, timeOfDay: number) => {
@@ -88,12 +89,82 @@ export const calculateRideFare = (
   const safeDuration = Math.max(0, durationMinutes);
   const safePickupDistance = Math.max(0, pickupDistanceKm);
 
+  // Car fares follow the requested direct distance rules.
+  if (rideType === 'car') {
+    const d = safeDistance;
+    const fareForDistance = d <= 1
+      ? (demandLevel === 'low' ? 86 : demandLevel === 'normal' ? 89 : 93)
+      : (demandLevel === 'low' ? 70 + d * 12.4 : demandLevel === 'normal' ? 70 + d * 11.4 : 75 + d * 15);
+
+    return {
+      finalFare: Math.round(fareForDistance),
+      breakdown: {
+        distanceFare: Math.round(fareForDistance),
+        timeFare: 0,
+        pickupFare: 0,
+        surge: 0,
+        fees: 0,
+        nightCharge: 0,
+        randomAdjustment: 0,
+        minimumFare: 0,
+        surgeMultiplier: 1,
+      },
+    };
+  }
+
+  // Auto fares follow the requested direct distance rules.
+  if (rideType === 'auto') {
+    const d = safeDistance;
+    const fareForDistance = d <= 1
+      ? (demandLevel === 'low' ? 45 : demandLevel === 'normal' ? 45 : 50)
+      : (demandLevel === 'low' ? 20 + d * 9 : demandLevel === 'normal' ? 18 + d * 14 : 25 + d * 13);
+
+    return {
+      finalFare: Math.round(fareForDistance),
+      breakdown: {
+        distanceFare: Math.round(fareForDistance),
+        timeFare: 0,
+        pickupFare: 0,
+        surge: 0,
+        fees: 0,
+        nightCharge: 0,
+        randomAdjustment: 0,
+        minimumFare: 0,
+        surgeMultiplier: 1,
+      },
+    };
+  }
+  
+  // Bike fares: use the new simple formulas provided by product requirements.
+  if (rideType === 'bike') {
+    const d = safeDistance;
+    const fareForDistance = d <= 1
+      ? (demandLevel === 'low' ? 19 : demandLevel === 'normal' ? 20 : 23)
+      : (demandLevel === 'low' ? 13 + d * 6.9 : demandLevel === 'normal' ? 14 + d * 8.5 : 15 + d * 9.7);
+
+    return {
+      finalFare: Math.round(fareForDistance),
+      breakdown: {
+        distanceFare: Math.round(fareForDistance),
+        timeFare: 0,
+        pickupFare: 0,
+        surge: 0,
+        fees: 0,
+        nightCharge: 0,
+        randomAdjustment: 0,
+        minimumFare: 0,
+        surgeMultiplier: 1,
+      },
+    };
+  }
+
+  
   const distanceFare = calculateSlabDistanceFare(rideType, safeDistance);
   const timeFare = safeDuration * config.timeRate;
   const pickupFare = safePickupDistance > 1.5
     ? (safePickupDistance - 1.5) * config.pickupRate
     : 0;
-
+  
   const subtotal = distanceFare + pickupFare + timeFare;
   const surgeMultiplier = getSurgeMultiplier(demandLevel, timeOfDay);
   const surgedSubtotal = subtotal * surgeMultiplier;
@@ -108,7 +179,7 @@ export const calculateRideFare = (
   const smartRounded = smartRoundFare(preRoundTotal);
   const finalDiscountRate = getRideFinalDiscountRate(demandLevel);
   const discountedFare = Math.round(smartRounded * (1 - finalDiscountRate));
-  const extraReductionRate = FARE_ADJUSTMENTS.extraReductionRate;
+  const { extraReductionRate } = FARE_ADJUSTMENTS;
   const extraDiscountedFare = Math.round(discountedFare * (1 - extraReductionRate));
   const finalFare = Math.max(config.minimumFare, extraDiscountedFare);
 

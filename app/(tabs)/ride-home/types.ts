@@ -159,3 +159,13 @@ export interface ShareAutoMatchResult {
   score: number;
 }
 
+export interface Driver {
+  id: string;
+  name?: string;
+  phone?: string;
+  vehicleType?: DriverVehicleType;
+  vehiclePlate?: string;
+  lastLocation?: Coord;
+  lastActiveAt?: any;
+  isOnline?: boolean;
+}

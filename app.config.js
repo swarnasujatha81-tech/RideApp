@@ -1,10 +1,10 @@
 module.exports = {
   expo: {
     name: 'Share-It',
-    slug: 'share-it',
+    slug: 'RideApp',
     version: '1.0.0',
     orientation: 'portrait',
-    icon: './assets/images/icon.png',
+    icon: './assets/images/shareit-logo.png',
     scheme: 'shareit',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
@@ -16,8 +16,8 @@ module.exports = {
     },
     android: {
       adaptiveIcon: {
-        backgroundColor: '#E6F4FE',
-        foregroundImage: './assets/images/android-icon-foreground.png',
+        backgroundColor: '#FFFFFF',
+        foregroundImage: './assets/images/shareit-logo.png',
         backgroundImage: './assets/images/android-icon-background.png',
         monochromeImage: './assets/images/android-icon-monochrome.png',
       },
@@ -42,16 +42,15 @@ module.exports = {
       [
         'expo-splash-screen',
         {
-          image: './assets/images/splash-icon.png',
+          image: './assets/images/shareit-logo.png',
           imageWidth: 200,
           resizeMode: 'contain',
           backgroundColor: '#ffffff',
-          dark: {
-            backgroundColor: '#000000',
-          },
         },
       ],
       'expo-web-browser',
+      'expo-font',
+      'expo-image',
     ],
     experiments: {
       typedRoutes: true,
