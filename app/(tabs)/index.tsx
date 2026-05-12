@@ -299,36 +299,40 @@ function RideAppScreen() {
     const normalizedPhone = normalizePhoneDigits(phone);
     if (!isValidMobileFn(normalizedPhone)) return false;
 
-    const localDeviceId = await ensureDeviceInstallId();
-    const driverRef = doc(db, 'drivers', normalizedPhone);
-    const driverSnap = await getDoc(driverRef);
-    if (!driverSnap.exists()) return false;
+    try {
+      const localDeviceId = await ensureDeviceInstallId();
+      const driverRef = doc(db, 'drivers', normalizedPhone);
+      const driverSnap = await getDoc(driverRef);
+      if (!driverSnap.exists()) return false;
 
-    const data = driverSnap.data();
-    const activeDeviceId = data?.activeDeviceId || '';
-    const canUseOnThisDevice = !activeDeviceId || activeDeviceId === localDeviceId || options?.claimDevice;
+      const data = driverSnap.data();
+      const activeDeviceId = data?.activeDeviceId || '';
+      const canUseOnThisDevice = !activeDeviceId || activeDeviceId === localDeviceId || options?.claimDevice;
 
-    if (!canUseOnThisDevice) {
-      await handleDriverSessionMoved();
-      return true;
-    }
+      if (!canUseOnThisDevice) {
+        await handleDriverSessionMoved();
+        return true;
+      }
 
-    if (!activeDeviceId || activeDeviceId !== localDeviceId || options?.claimDevice) {
-      await setDoc(driverRef, {
+      if (!activeDeviceId || activeDeviceId !== localDeviceId || options?.claimDevice) {
+        await setDoc(driverRef, {
+          activeDeviceId: localDeviceId,
+          activeAuthUid: options?.userId || auth.currentUser?.uid || '',
+          lastDriverOtpLoginAt: Timestamp.now(),
+          phone: normalizedPhone,
+          ...(options?.nameFallback && !data?.name ? { name: options.nameFallback } : {}),
+        }, { merge: true });
+      }
+
+      await applyDriverRecordToState(normalizedPhone, {
+        ...data,
         activeDeviceId: localDeviceId,
-        activeAuthUid: options?.userId || auth.currentUser?.uid || '',
-        lastDriverOtpLoginAt: Timestamp.now(),
-        phone: normalizedPhone,
         ...(options?.nameFallback && !data?.name ? { name: options.nameFallback } : {}),
-      }, { merge: true });
+      });
+      return true;
+    } catch {
+      return false;
     }
-
-    await applyDriverRecordToState(normalizedPhone, {
-      ...data,
-      activeDeviceId: localDeviceId,
-      ...(options?.nameFallback && !data?.name ? { name: options.nameFallback } : {}),
-    });
-    return true;
   }, [applyDriverRecordToState, ensureDeviceInstallId, handleDriverSessionMoved, normalizePhoneDigits]);
 
   useEffect(() => {
@@ -446,6 +450,8 @@ function RideAppScreen() {
           setShowDriverPaymentModal(true);
         }, remainingMs);
       }
+    }, () => {
+      // Ignore permission/network stream errors here; UI state is handled by existing auth/session flows.
     });
     return () => {
       unsub();
@@ -565,7 +571,7 @@ function RideAppScreen() {
       console.log('[auth] signing in with phone credential');
       const userCred = await signInWithCredential(auth, cred);
       console.log('[auth] sign in completed', { uid: userCred.user?.uid || null });
-      const user = userCred.user;
+      const { user } = userCred;
       if (user) {
         const verifiedPhone = normalizePhoneDigits(requestedPhone || user.phoneNumber);
         try {
@@ -995,16 +1001,15 @@ function RideAppScreen() {
       return;
     }
 
-    const unsub = onSnapshot(collection(db, 'helpForum'), (snapshot) => {
-      const next = snapshot.docs
-        .map((d) => ({ id: d.id, ...d.data() } as HelpQuestion))
-        .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-      setHelpQuestions(next);
+    return onSnapshot(collection(db, 'helpForum'), (snapshot) => {
+      setHelpQuestions(
+        snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as HelpQuestion))
+          .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0))
+      );
     }, () => {
       setHelpQuestions([]);
     });
-
-    return unsub;
   }, [currentUserId]);
 
   useEffect(() => {
@@ -2207,7 +2212,7 @@ function RideAppScreen() {
     chatLastMessageAtRef.current = 0;
     chatListenerHydratedRef.current = false;
 
-    const unsub = onSnapshot(collection(db, 'rides', activeRide.id, 'messages'), (snapshot) => {
+    return onSnapshot(collection(db, 'rides', activeRide.id, 'messages'), (snapshot) => {
       const fullList = snapshot.docs
         .map(d => {
           const data = d.data() as Partial<ChatMessage> & { sender?: string; senderName?: string };
@@ -2247,8 +2252,6 @@ function RideAppScreen() {
     }, () => {
       // Ignore chat stream permission/network errors.
     });
-
-    return unsub;
   }, [activeRide?.id, chatOpen, mode]);
 
   useEffect(() => {
@@ -2335,7 +2338,7 @@ function RideAppScreen() {
   useEffect(() => {
     if (mode !== 'DRIVER' || !currentUserId) return;
     const q = query(collection(db, 'rideHistory'), where('driverId', '==', currentUserId));
-    const unsub = onSnapshot(q, (snapshot) => {
+    return onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
       list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
       setDriverHistory(list);
@@ -2354,7 +2357,6 @@ function RideAppScreen() {
       setDriverPayableToApp(0);
       setDriverAvgPickupMinutes(0);
     });
-    return unsub;
   }, [mode, currentUserId]);
 
   useEffect(() => {
@@ -2363,7 +2365,7 @@ function RideAppScreen() {
       return;
     }
     const q = query(collection(db, 'rideHistory'), where('passengerId', '==', currentUserId));
-    const unsub = onSnapshot(q, (snapshot) => {
+    return onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RideHistory));
       list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
       setPassengerHistory(list);
@@ -2371,7 +2373,6 @@ function RideAppScreen() {
     }, () => {
       setPassengerHistory([]);
     });
-    return unsub;
   }, [mode, currentUserId, maybeOpenRideBillFromHistory]);
 
   useEffect(() => {
@@ -2396,7 +2397,7 @@ function RideAppScreen() {
   }, [mode, driverOnline, driverVehicle, isIdentitySet, currentRide, rides, ignoredRides, driverDestinationFilterEnabled, driverDestinationMarker]);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'rides'), (snapshot) => {
+    return onSnapshot(collection(db, 'rides'), (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Ride));
       setRides(list);
       if (userBookedRide?.id) {
@@ -2417,13 +2418,12 @@ function RideAppScreen() {
     }, () => {
       setRides([]);
     });
-    return unsub;
   }, [userBookedRide?.id, currentRide?.id, currentUserId]);
 
   useEffect(() => {
     if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto' || !currentUserId) return;
 
-    const unsubRideDoc = onSnapshot(doc(db, 'rides', userBookedRide.id), (snapshot) => {
+    return onSnapshot(doc(db, 'rides', userBookedRide.id), (snapshot) => {
       if (snapshot.exists()) {
         const updatedRide = { id: snapshot.id, ...snapshot.data() } as Ride;
         if (isActiveRideStatus(updatedRide.status)) {
@@ -2433,14 +2433,12 @@ function RideAppScreen() {
         }
       }
     }, () => {});
-
-    return unsubRideDoc;
   }, [userBookedRide?.id, currentUserId]);
 
   useEffect(() => {
     if (!userBookedRide?.id || userBookedRide.type !== 'ShareAuto' || !currentUserId) return;
 
-    const unsubBroadcast = onSnapshot(doc(db, 'rideAcceptanceBroadcast', `${userBookedRide.id}_${currentUserId}`), (snapshot) => {
+    return onSnapshot(doc(db, 'rideAcceptanceBroadcast', `${userBookedRide.id}_${currentUserId}`), (snapshot) => {
       if (snapshot.exists()) {
         const broadcastData = snapshot.data();
         if (broadcastData?.status === 'accepted' && userBookedRide?.id === broadcastData?.rideId) {
@@ -2448,8 +2446,6 @@ function RideAppScreen() {
         }
       }
     }, () => {});
-
-    return unsubBroadcast;
   }, [userBookedRide?.id, currentUserId]);
 
   useEffect(() => {
@@ -2566,6 +2562,8 @@ function RideAppScreen() {
             startShareAutoFallback('No matching ShareAuto passengers were found within 3 minutes. Bike, Auto, or Cab is recommended for a faster trip.');
           }
         }
+      } catch {
+        setShareAutoFoundMembers(0);
       } finally {
         shareAutoMatchInFlightRef.current = false;
       }
@@ -2574,6 +2572,8 @@ function RideAppScreen() {
     const poolQuery = query(collection(db, 'shareAutoPools'), where('status', '==', 'searching'));
     const unsubPoolListener = onSnapshot(poolQuery, () => {
       void scanShareAutoMatch({ allowPartialMatch: false, isFallbackAttempt: false });
+    }, () => {
+      // Ignore listener errors to prevent noisy uncaught rejections.
     });
 
     void scanShareAutoMatch({ allowPartialMatch: false, isFallbackAttempt: false });
@@ -3335,7 +3335,7 @@ function RideAppScreen() {
       });
 
       if (!result.canceled && result.assets?.[0]?.uri) {
-        const uri = result.assets[0].uri;
+        const [{ uri }] = result.assets;
         setDriverPhotoUri(uri);
         await uploadDriverPhoto(uri);
       }
@@ -3429,9 +3429,16 @@ function RideAppScreen() {
     };
     setCurrentRide(acceptedRide);
 
+    const updated = await updateRideSafely(ride.id, updatePayload, () => {
+      setCurrentRide(null);
+      Alert.alert('Ride unavailable', 'This request was already closed or reassigned.');
+    });
+
+    if (!updated) return;
+
     if (ride.type === 'ShareAuto' && ride.shareAutoPassengerIds) {
       for (const passengerId of ride.shareAutoPassengerIds) {
-        setDoc(doc(db, 'rideAcceptanceBroadcast', `${ride.id!}_${passengerId}`), {
+        await setDoc(doc(db, 'rideAcceptanceBroadcast', `${ride.id!}_${passengerId}`), {
           rideId: ride.id!,
           passengerId,
           status: 'accepted',
@@ -3440,11 +3447,6 @@ function RideAppScreen() {
         }).catch(() => {});
       }
     }
-
-    await updateRideSafely(ride.id, updatePayload, () => {
-      setCurrentRide(null);
-      Alert.alert('Ride unavailable', 'This request was already closed or reassigned.');
-    });
   };
 
   const cancelRide = async (id: string, isDriver: boolean, reason?: string) => {
@@ -3596,28 +3598,24 @@ function RideAppScreen() {
       return;
     }
 
-    if (userBookedRide?.id && userBookedRide.status === 'waiting') {
-      if (waitingCancelRideIdRef.current !== userBookedRide.id) {
-        if (waitingCancelTimerRef.current) {
-          clearTimeout(waitingCancelTimerRef.current);
-          waitingCancelTimerRef.current = null;
-        }
-
-        waitingCancelRideIdRef.current = userBookedRide.id;
-        const rideId = userBookedRide.id;
-        waitingCancelTimerRef.current = setTimeout(async () => {
-          const latestRide = userBookedRideRef.current;
-          if (!latestRide || latestRide.id !== rideId || latestRide.status !== 'waiting') return;
-          if (!cancelRideRef.current) return;
-          await cancelRideRef.current(rideId, false, 'no_driver_accepted');
-        }, 4 * 60 * 1000);
-      }
-    } else {
+    if (userBookedRide?.id && userBookedRide.status === 'waiting' && waitingCancelRideIdRef.current !== userBookedRide.id) {
       if (waitingCancelTimerRef.current) {
         clearTimeout(waitingCancelTimerRef.current);
         waitingCancelTimerRef.current = null;
-        waitingCancelRideIdRef.current = null;
       }
+
+      waitingCancelRideIdRef.current = userBookedRide.id;
+      const rideId = userBookedRide.id;
+      waitingCancelTimerRef.current = setTimeout(async () => {
+        const latestRide = userBookedRideRef.current;
+        if (!latestRide || latestRide.id !== rideId || latestRide.status !== 'waiting') return;
+        if (!cancelRideRef.current) return;
+        await cancelRideRef.current(rideId, false, 'no_driver_accepted');
+      }, 4 * 60 * 1000);
+    } else if (mode === 'USER' && waitingCancelTimerRef.current) {
+      clearTimeout(waitingCancelTimerRef.current);
+      waitingCancelTimerRef.current = null;
+      waitingCancelRideIdRef.current = null;
     }
 
     return () => {
@@ -4298,7 +4296,7 @@ function RideAppScreen() {
           styles.bottomCard,
           mode === 'USER' && !userBookedRide && isPassengerCardExpanded ? styles.bottomCardOverlay : null,
           mode === 'USER' && !userBookedRide
-            ? (!isPassengerCardExpanded ? { transform: [{ translateY: passengerCardTranslateY }] } : null)
+            ? (isPassengerCardExpanded ? null : { transform: [{ translateY: passengerCardTranslateY }] })
             : null,
         ]}
       >

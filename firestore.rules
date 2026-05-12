@@ -57,6 +57,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         resource.data.passengerId == request.auth.uid ||
         resource.data.driverId == request.auth.uid ||
+        (resource.data.status == 'waiting' && request.resource.data.status == 'accepted' && request.resource.data.driverId == request.auth.uid) ||
         (resource.data.sharedPassengerIds is list && request.auth.uid in resource.data.sharedPassengerIds)
       );
       // Delete: passenger or driver only
@@ -150,6 +151,19 @@ service cloud.firestore {
       // Delete: owner (passenger) only
       allow delete: if isAuthenticated() && resource.data.passengerId == request.auth.uid;
       allow update: if false;
+    }
+
+    // ShareAuto acceptance broadcast docs (rideId_passengerId)
+    match /rideAcceptanceBroadcast/{broadcastId} {
+      allow read: if isAuthenticated() && (
+        resource.data.passengerId == request.auth.uid ||
+        get(/databases/$(database)/documents/rides/$(resource.data.rideId)).data.driverId == request.auth.uid
+      );
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.rideId is string &&
+        get(/databases/$(database)/documents/rides/$(request.resource.data.rideId)).data.driverId == request.auth.uid
+      );
+      allow delete: if false;
     }
   }
 }
