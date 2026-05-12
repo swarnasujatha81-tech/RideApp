@@ -1,11 +1,11 @@
 module.exports = {
   expo: {
-    name: 'RideApp',
-    slug: 'RideApp',
+    name: 'Share-It',
+    slug: 'share-it',
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/images/icon.png',
-    scheme: 'rideapp',
+    scheme: 'shareit',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
     ios: {
