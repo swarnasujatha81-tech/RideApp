@@ -27,6 +27,8 @@ import { styles } from './ride-home/styles';
 import type { ChatMessage, Coord, Driver, DriverVehicleType, HelpQuestion, PoolPassenger, Ride, RideHistory, RideType, ShareAutoPool } from './ride-home/types';
 import { isActiveRideStatus } from './ride-home/types';
 
+const PASSENGER_QUOTE_DEMAND_LEVEL: DemandLevel = 'low';
+
 type RideBillRecord = RideHistory & {
   distance?: number;
   pickupTimeMs?: number;
@@ -123,6 +125,7 @@ function RideAppScreen() {
   const [currentRide, setCurrentRide] = useState<Ride | null>(null);
   const [driverVehicle, setDriverVehicle] = useState<DriverVehicleType | null>(null);
   const [fares, setFares] = useState({ Bike: 0, Auto: 0, Cab: 0, ShareAuto: 0, Parcel: 0 });
+  const [isCalculatingFares, setIsCalculatingFares] = useState(false);
   const [otpInput, setOtpInput] = useState('');
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [verificationSent, setVerificationSent] = useState(false);
@@ -1408,6 +1411,7 @@ function RideAppScreen() {
   const applySearchSuggestion = async (field: 'pickup' | 'drop', suggestion: string) => {
     setActiveSearchField(null);
     setSearchSuggestions([]);
+    setIsCalculatingFares(true);
     if (field === 'pickup') {
       setPickupInput(suggestion);
     } else {
@@ -1510,9 +1514,8 @@ function RideAppScreen() {
   };
 
   const getDynamicBikeFare = (distanceKm: number) => {
-    const demandLevel = getDemandLevel();
     const now = new Date().getHours();
-    return calculateRideFare('bike', distanceKm, 0, 0, demandLevel, now).finalFare;
+    return calculateRideFare('bike', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare;
   };
 
   const getDynamicParcelFare = (distanceKm: number) => {
@@ -1521,15 +1524,13 @@ function RideAppScreen() {
   };
 
   const getDynamicAutoFare = (distanceKm: number) => {
-    const demandLevel = getDemandLevel();
     const now = new Date().getHours();
-    return calculateRideFare('auto', distanceKm, 0, 0, demandLevel, now).finalFare;
+    return calculateRideFare('auto', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare;
   };
 
   const getDynamicCabFare = (distanceKm: number) => {
-    const demandLevel = getDemandLevel();
     const now = new Date().getHours();
-    return calculateRideFare('car', distanceKm, 0, 0, demandLevel, now).finalFare;
+    return calculateRideFare('car', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare;
   };
 
   const getShareAutoDemandIncreaseRate = () => {
@@ -2750,18 +2751,20 @@ function RideAppScreen() {
   useEffect(() => {
     if (pickupCoords && destCoords) {
         const dist = calcDist(pickupCoords, destCoords);
-        const demandLevel = getPricingDemandLevel(getDemandFactor);
         const now = new Date().getHours();
         
         setFares({
-          Bike: calculateRideFare('bike', dist, 0, 0, demandLevel, now).finalFare + farePenalty,
-          Auto: calculateRideFare('auto', dist, 0, 0, demandLevel, now).finalFare + farePenalty,
-          Cab: calculateRideFare('car', dist, 0, 0, demandLevel, now).finalFare + farePenalty,
-          ShareAuto: getShareAutoFare(dist, 3) + farePenalty,
-          Parcel: getDynamicParcelFare(dist) + farePenalty,
+          Bike: calculateRideFare('bike', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
+          Auto: calculateRideFare('auto', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
+          Cab: calculateRideFare('car', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
+          ShareAuto: getShareAutoFare(dist, 3),
+          Parcel: getDynamicParcelFare(dist),
         });
+        setIsCalculatingFares(false);
+    } else {
+      setIsCalculatingFares(false);
     }
-  }, [destCoords, pickupCoords, rides, allDrivers, farePenalty]);
+  }, [destCoords, pickupCoords]);
 
   const isComboParcelSender = (ride: Ride | null) => !!ride && ride.comboMode === 'PARCEL_PLUS_BIKE' && ride.comboParcelSenderId === currentUserId;
 
@@ -2843,23 +2846,32 @@ function RideAppScreen() {
   const handleSearch = async (type: 'pickup' | 'drop', explicitQuery?: string) => {
     const queryStr = explicitQuery ?? (type === 'pickup' ? pickupInput : destination);
     if (!queryStr || queryStr === 'Current Location') return;
+    setIsCalculatingFares(true);
 
-    const closestArea = getClosestPopularAreaMatch(queryStr);
-    const queryToUse = closestArea || queryStr;
-    let res = await Location.geocodeAsync(queryToUse);
+    try {
+      const closestArea = getClosestPopularAreaMatch(queryStr);
+      const queryToUse = closestArea || queryStr;
+      let res = await Location.geocodeAsync(queryToUse);
 
-    if (res.length === 0 && closestArea && queryToUse !== queryStr) {
-      res = await Location.geocodeAsync(queryStr);
-    }
-
-    if (res.length > 0) {
-      const coord = { latitude: res[0].latitude, longitude: res[0].longitude };
-      if (!isWithinHyderabadService(coord)) {
-        Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
-        return;
+      if (res.length === 0 && closestArea && queryToUse !== queryStr) {
+        res = await Location.geocodeAsync(queryStr);
       }
-      await playMarkerSound(400);
-      type === 'pickup' ? setPickupCoords(coord) : setDestCoords(coord);
+
+      if (res.length > 0) {
+        const coord = { latitude: res[0].latitude, longitude: res[0].longitude };
+        if (!isWithinHyderabadService(coord)) {
+          Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
+          setIsCalculatingFares(false);
+          return;
+        }
+        await playMarkerSound(400);
+        type === 'pickup' ? setPickupCoords(coord) : setDestCoords(coord);
+      } else {
+        setIsCalculatingFares(false);
+      }
+    } catch (error) {
+      setIsCalculatingFares(false);
+      throw error;
     }
   };
 
@@ -4366,10 +4378,12 @@ function RideAppScreen() {
                       onFocus={() => handleSearchFieldFocus('pickup')}
                       onChangeText={(v) => {
                         setPickupInput(v);
+                        setIsCalculatingFares(!!v.trim() && !!destination.trim());
                         setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('pickup')}
                     />
+                    <Text style={styles.routeToText}>To</Text>
                     <TextInput
                       style={styles.input}
                       placeholder="Drop Area"
@@ -4377,6 +4391,7 @@ function RideAppScreen() {
                       onFocus={() => handleSearchFieldFocus('drop')}
                       onChangeText={(v) => {
                         setDestination(v);
+                        setIsCalculatingFares(!!pickupInput.trim() && !!v.trim());
                         setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('drop')}
@@ -4393,6 +4408,9 @@ function RideAppScreen() {
                           </TouchableOpacity>
                         ))}
                       </View>
+                    )}
+                    {isCalculatingFares && (
+                      <Text style={styles.fareCalculatingText}>Calculating your fares...</Text>
                     )}
 
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
@@ -4514,10 +4532,12 @@ function RideAppScreen() {
                       onFocus={() => handleSearchFieldFocus('pickup')}
                       onChangeText={(v) => {
                         setPickupInput(v);
+                        setIsCalculatingFares(!!v.trim() && !!destination.trim());
                         setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('pickup')}
                     />
+                    <Text style={styles.routeToText}>To</Text>
                     <TextInput
                       style={styles.input}
                       placeholder="Drop Area"
@@ -4525,6 +4545,7 @@ function RideAppScreen() {
                       onFocus={() => handleSearchFieldFocus('drop')}
                       onChangeText={(v) => {
                         setDestination(v);
+                        setIsCalculatingFares(!!pickupInput.trim() && !!v.trim());
                         setSearchSuggestions(getSearchSuggestions(v));
                       }}
                       onSubmitEditing={() => handleSearch('drop')}
@@ -4541,6 +4562,9 @@ function RideAppScreen() {
                           </TouchableOpacity>
                         ))}
                       </View>
+                    )}
+                    {isCalculatingFares && (
+                      <Text style={styles.fareCalculatingText}>Calculating your fares...</Text>
                     )}
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
                       {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (

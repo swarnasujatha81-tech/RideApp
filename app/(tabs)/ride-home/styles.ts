@@ -103,6 +103,8 @@ StyleSheet.create({
   passengerExpandedBottomBackBtn: { marginTop: 10, backgroundColor: '#111827', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
   passengerExpandedBottomBackBtnText: { color: '#FFFFFF', fontWeight: '800' },
   input: { backgroundColor: '#F2F2F7', padding: 12, borderRadius: 12, marginBottom: 10 },
+  routeToText: { alignSelf: 'center', marginTop: -4, marginBottom: 6, color: '#64748B', fontSize: 11, fontWeight: '800' },
+  fareCalculatingText: { color: '#2563EB', fontSize: 12, fontWeight: '700', textAlign: 'center', marginTop: -2, marginBottom: 10 },
   primaryButton: { backgroundColor: '#007AFF', padding: 16, borderRadius: 15, alignItems: 'center' },
   verificationModal: { flex: 1, backgroundColor: '#0B1020' },
   subscriptionModal: { flex: 1, backgroundColor: '#07111F' },

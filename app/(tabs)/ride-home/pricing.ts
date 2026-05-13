@@ -23,6 +23,13 @@ export interface RideFareQuote {
   breakdown: RideFareBreakdown;
 }
 
+const FIRST_KM_FARE_TOLERANCE_KM = 0.1;
+
+const normalizeFareDistanceKm = (distanceKm: number): number => {
+  const safeDistance = Math.max(0, distanceKm);
+  return Number(safeDistance.toFixed(2));
+};
+
 export const getPricingDemandLevel = (getDemandFactor: () => number): DemandLevel => {
   const demandFactor = getDemandFactor();
 
@@ -85,13 +92,13 @@ export const calculateRideFare = (
   timeOfDay: number
 ): RideFareQuote => {
   const config = VEHICLE_FARE_SETTINGS[rideType];
-  const safeDistance = Math.max(0, distanceKm);
+  const safeDistance = normalizeFareDistanceKm(distanceKm);
   const safeDuration = Math.max(0, durationMinutes);
   const safePickupDistance = Math.max(0, pickupDistanceKm);
 
   // Car fares follow the requested direct distance rules.
   if (rideType === 'car') {
-    const d = safeDistance;
+    const d = safeDistance <= 1 + FIRST_KM_FARE_TOLERANCE_KM ? 1 : safeDistance;
     const fareForDistance = d <= 1
       ? (demandLevel === 'low' ? 86 : demandLevel === 'normal' ? 89 : 93)
       : (demandLevel === 'low' ? 70 + d * 12.4 : demandLevel === 'normal' ? 70 + d * 11.4 : 75 + d * 15);
@@ -114,7 +121,7 @@ export const calculateRideFare = (
 
   // Auto fares follow the requested direct distance rules.
   if (rideType === 'auto') {
-    const d = safeDistance;
+    const d = safeDistance <= 1 + FIRST_KM_FARE_TOLERANCE_KM ? 1 : safeDistance;
     const fareForDistance = d <= 1
       ? (demandLevel === 'low' ? 45 : demandLevel === 'normal' ? 45 : 50)
       : (demandLevel === 'low' ? 20 + d * 9 : demandLevel === 'normal' ? 18 + d * 14 : 25 + d * 13);
@@ -137,7 +144,7 @@ export const calculateRideFare = (
   
   // Bike fares: use the new simple formulas provided by product requirements.
   if (rideType === 'bike') {
-    const d = safeDistance;
+    const d = safeDistance <= 1 + FIRST_KM_FARE_TOLERANCE_KM ? 1 : safeDistance;
     const fareForDistance = d <= 1
       ? (demandLevel === 'low' ? 19 : demandLevel === 'normal' ? 20 : 23)
       : (demandLevel === 'low' ? 13 + d * 6.9 : demandLevel === 'normal' ? 14 + d * 8.5 : 15 + d * 9.7);
