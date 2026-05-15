@@ -57,9 +57,10 @@ module.exports = {
       reactCompiler: true,
     },
     extra: {
+      openRouteServiceApiKey: process.env.EXPO_PUBLIC_ORS_API_KEY || process.env.ORS_API_KEY || '',
       router: {},
       eas: {
-        projectId: '3fab94ce-b845-45b2-bc9c-c5daadf08009',
+        projectId: 'c011d683-3520-440d-be83-e13064807704',
       },
     },
   },

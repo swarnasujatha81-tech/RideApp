@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
@@ -5,6 +6,7 @@ import * as Location from 'expo-location';
 import { onAuthStateChanged, PhoneAuthProvider, signInWithCredential, signOut } from 'firebase/auth';
 import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import debounce from 'lodash.debounce';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, FlatList, Image, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, Share, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,12 +16,14 @@ import DriverVerificationButtons from '../../components/driver-verification';
 import FirebaseRecaptchaVerifier from '../../components/firebase-recaptcha-verifier';
 import OSMMapView, { OSMMapViewRef } from '../../components/osm-map-view';
 import { useAuth } from '../../lib/auth-context';
-import { FARE_ADJUSTMENTS, SHARE_AUTO_FARE_SETTINGS } from '../../lib/fare-settings';
+import { SHARE_AUTO_FARE_SETTINGS } from '../../lib/fare-settings';
 import { NotificationService } from '../../lib/notification-service';
+import { searchHyderabadLocationsDetailed, type LocationSuggestion } from '../../services/locationSearch';
+import { getRouteDistance } from '../../services/routingService';
 import { AppErrorBoundary } from './ride-home/AppErrorBoundary';
 import { ACTIVE_RIDE_BUTTON_HEIGHT, ACTIVE_RIDE_BUTTON_WIDTH, CHAT_SOUND_URL, CURRENT_LOC_FAB_RISE, DEFAULT_MAP_REGION, DRIVER_ALERT_SOUND_URL, DRIVER_DESTINATION_MARKER_RADIUS_KM, DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT, DRIVER_SUBSCRIPTION_AMOUNT, DRIVER_SUBSCRIPTION_DAYS, EARN_REWARD_AMOUNT, FIVE_MIN_MS, GAME_BIRD_HIT_SOUND_URL, GAME_UNLOCK_SOUND_URL, GAME_ZOMBIE_HIT_SOUND_URL, HYDERABAD_SERVICE_RADIUS_KM, icons, MARKER_PLACE_SOUND_URL, PRIMARY_ACTION_SOUND_URL, RAZORPAY_KEY_ID, SCREEN_HEIGHT, SCREEN_WIDTH, VEHICLE_SELECT_SOUND_URL } from './ride-home/constants';
 import { auth, db, firebaseConfig, storage } from './ride-home/firebase-core';
-import { calcDist, getAreaLabelFromCoord, getClosestPopularAreaMatch, getMandalName, getNearestPopularArea, getPrimaryAreaName, getRideCreatedAtMs, getSearchSuggestions, isFreshWaitingRide, isValidEmail, isValidMobileFn, isValidVehiclePlate, isWithinHyderabadService } from './ride-home/geo';
+import { calcDist, getAreaLabelFromCoord, getMandalName, getNearestPopularArea, getPrimaryAreaName, getRideCreatedAtMs, isFreshWaitingRide, isValidEmail, isValidMobileFn, isValidVehiclePlate, isWithinHyderabadService } from './ride-home/geo';
 import { decryptOTP, encryptOTP, generateOTP } from './ride-home/otp';
 import { calculateRideFare, getPricingDemandLevel, type DemandLevel } from './ride-home/pricing';
 import { calcSegmentEtaMinutes, findShareAutoMatch, toPoolPassenger } from './ride-home/shareAutoMatching';
@@ -116,7 +120,13 @@ function RideAppScreen() {
   const [destination, setDestination] = useState('');
   const [destCoords, setDestCoords] = useState<Coord | null>(null);
   const [activeSearchField, setActiveSearchField] = useState<'pickup' | 'drop' | null>(null);
-  const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
+  const [searchSuggestions, setSearchSuggestions] = useState<LocationSuggestion[]>([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [searchSuggestionState, setSearchSuggestionState] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle');
+  const [searchSuggestionMessage, setSearchSuggestionMessage] = useState('');
+  const [routeDistanceKm, setRouteDistanceKm] = useState<number | null>(null);
+  const [routeDurationSeconds, setRouteDurationSeconds] = useState<number | null>(null);
+  const [routeDistanceError, setRouteDistanceError] = useState('');
   const [selectedRide, setSelectedRide] = useState<RideType | null>(null);
   const [rides, setRides] = useState<Ride[]>([]);
   const [allDrivers, setAllDrivers] = useState<Driver[]>([]);
@@ -139,6 +149,8 @@ function RideAppScreen() {
   const passengerRideBillSeenRef = useRef('');
   const driverRideBillPrimedRef = useRef(false);
   const passengerRideBillPrimedRef = useRef(false);
+  const suggestionRequestIdRef = useRef(0);
+  const routeRequestIdRef = useRef(0);
 
   const openRideBill = useCallback((bill: RideBillRecord) => {
     if (!bill.id) return;
@@ -1401,24 +1413,125 @@ function RideAppScreen() {
     return usedToday < DRIVER_DESTINATION_TOGGLE_DAILY_LIMIT;
   };
 
-  const handleSearchFieldFocus = (field: 'pickup' | 'drop') => {
+  const runLocationSearch = useCallback(async (field: 'pickup' | 'drop', query: string) => {
+    const trimmed = query.trim();
+    const requestId = suggestionRequestIdRef.current + 1;
+    suggestionRequestIdRef.current = requestId;
+
+    if (trimmed.length < 2 || trimmed.toLowerCase() === 'current location') {
+      setSearchSuggestions([]);
+      setIsLoadingSuggestions(false);
+      setSearchSuggestionState('idle');
+      setSearchSuggestionMessage('');
+      return;
+    }
+
+    setIsLoadingSuggestions(true);
+    setSearchSuggestionState('loading');
+    setSearchSuggestionMessage('');
+    const result = await searchHyderabadLocationsDetailed(trimmed);
+    if (suggestionRequestIdRef.current !== requestId) return;
+
+    setSearchSuggestions(result.results);
+    setIsLoadingSuggestions(false);
+    if (result.error === 'network') {
+      setSearchSuggestionState('error');
+      setSearchSuggestionMessage('Could not load locations right now. Check your connection and try again.');
+    } else if (!result.results.length) {
+      setSearchSuggestionState('empty');
+      setSearchSuggestionMessage('No locations found');
+    } else {
+      setSearchSuggestionState('ready');
+      setSearchSuggestionMessage('');
+    }
+    setActiveSearchField(field);
+  }, []);
+
+  const debouncedLocationSearch = useMemo(
+    () => debounce((field: 'pickup' | 'drop', query: string) => {
+      void runLocationSearch(field, query);
+    }, 500),
+    [runLocationSearch]
+  );
+
+  useEffect(() => () => {
+    debouncedLocationSearch.cancel();
+  }, [debouncedLocationSearch]);
+
+  const handleSearchFieldFocus = useCallback((field: 'pickup' | 'drop') => {
     if (!isPassengerCardExpanded) animatePassengerCard(true);
     setActiveSearchField(field);
     const query = field === 'pickup' ? pickupInput : destination;
-    setSearchSuggestions(getSearchSuggestions(query));
-  };
+    debouncedLocationSearch(field, query);
+  }, [animatePassengerCard, debouncedLocationSearch, destination, isPassengerCardExpanded, pickupInput]);
 
-  const applySearchSuggestion = async (field: 'pickup' | 'drop', suggestion: string) => {
+  const handleLocationInputChange = useCallback((field: 'pickup' | 'drop', value: string) => {
+    setActiveSearchField(field);
+    setRouteDistanceKm(null);
+    setRouteDurationSeconds(null);
+    setRouteDistanceError('');
+    setIsCalculatingFares(!!value.trim() && !!(field === 'pickup' ? destination : pickupInput).trim());
+
+    if (field === 'pickup') {
+      setPickupInput(value);
+      setPickupCoords(null);
+    } else {
+      setDestination(value);
+      setDestCoords(null);
+    }
+
+    debouncedLocationSearch(field, value);
+  }, [debouncedLocationSearch, destination, pickupInput]);
+
+  const applySearchSuggestion = async (field: 'pickup' | 'drop', suggestion: LocationSuggestion) => {
     setActiveSearchField(null);
     setSearchSuggestions([]);
+    setIsLoadingSuggestions(false);
+    setSearchSuggestionState('idle');
+    setSearchSuggestionMessage('');
     setIsCalculatingFares(true);
-    if (field === 'pickup') {
-      setPickupInput(suggestion);
-    } else {
-      setDestination(suggestion);
+    setRouteDistanceKm(null);
+    setRouteDurationSeconds(null);
+    setRouteDistanceError('');
+    const coord = { latitude: suggestion.latitude, longitude: suggestion.longitude };
+
+    if (!isWithinHyderabadService(coord)) {
+      Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
+      setIsCalculatingFares(false);
+      return;
     }
-    await handleSearch(field, suggestion);
+
+    if (field === 'pickup') {
+      setPickupInput(suggestion.displayName);
+      setPickupCoords(coord);
+    } else {
+      setDestination(suggestion.displayName);
+      setDestCoords(coord);
+    }
+    await playMarkerSound(400);
   };
+
+  const handleSuggestionPress = useCallback((item: LocationSuggestion) => {
+    if (activeSearchField) void applySearchSuggestion(activeSearchField, item);
+  }, [activeSearchField, applySearchSuggestion]);
+
+  const renderSuggestionItem = useCallback(({ item }: { item: LocationSuggestion }) => (
+    <TouchableOpacity
+      style={styles.searchSuggestionItem}
+      activeOpacity={0.86}
+      onPress={() => handleSuggestionPress(item)}
+    >
+      <View style={styles.searchSuggestionIconWrap}>
+        <Ionicons name="location-sharp" size={17} color="#2563EB" />
+      </View>
+      <View style={styles.searchSuggestionTextWrap}>
+        <Text numberOfLines={1} ellipsizeMode="tail" style={styles.searchSuggestionTitle}>{item.title}</Text>
+        {!!item.subtitle && (
+          <Text numberOfLines={2} ellipsizeMode="tail" style={styles.searchSuggestionSubtitle}>{item.subtitle}</Text>
+        )}
+      </View>
+    </TouchableOpacity>
+  ), [handleSuggestionPress]);
 
   const getDistanceFromDriver = (ride: Ride) => {
     if (!location) return Number.POSITIVE_INFINITY;
@@ -2520,7 +2633,9 @@ function RideAppScreen() {
           setShowShareAutoGame(false);
           setShareAutoGamePausedByRide(true);
 
-          const passengerDistances = selectedPassengers.map((p) => calcDist(p.pickup, p.drop));
+          const passengerDistances = await Promise.all(
+            selectedPassengers.map(async (p) => (await getRouteDistance(p.pickup, p.drop)).distanceKm)
+          );
           const baseDistance = passengerDistances.reduce((sum, x) => sum + x, 0) / passengerCount;
           const baseFare = getShareAutoFare(baseDistance, passengerCount);
 
@@ -2749,10 +2864,29 @@ function RideAppScreen() {
   }, [userBookedRide?.status]);
 
   useEffect(() => {
-    if (pickupCoords && destCoords) {
-        const dist = calcDist(pickupCoords, destCoords);
+    const requestId = routeRequestIdRef.current + 1;
+    routeRequestIdRef.current = requestId;
+
+    if (!pickupCoords || !destCoords) {
+      setRouteDistanceKm(null);
+      setRouteDurationSeconds(null);
+      setRouteDistanceError('');
+      setIsCalculatingFares(false);
+      return;
+    }
+
+    setIsCalculatingFares(true);
+    setRouteDistanceError('');
+
+    getRouteDistance(pickupCoords, destCoords)
+      .then((route) => {
+        if (routeRequestIdRef.current !== requestId) return;
+
+        const dist = route.distanceKm;
         const now = new Date().getHours();
-        
+
+        setRouteDistanceKm(dist);
+        setRouteDurationSeconds(route.durationSeconds);
         setFares({
           Bike: calculateRideFare('bike', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
           Auto: calculateRideFare('auto', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
@@ -2761,9 +2895,14 @@ function RideAppScreen() {
           Parcel: getDynamicParcelFare(dist),
         });
         setIsCalculatingFares(false);
-    } else {
-      setIsCalculatingFares(false);
-    }
+      })
+      .catch(() => {
+        if (routeRequestIdRef.current !== requestId) return;
+        setRouteDistanceKm(null);
+        setRouteDurationSeconds(null);
+        setRouteDistanceError('Could not calculate road distance. Please check your connection and try again.');
+        setIsCalculatingFares(false);
+      });
   }, [destCoords, pickupCoords]);
 
   const isComboParcelSender = (ride: Ride | null) => !!ride && ride.comboMode === 'PARCEL_PLUS_BIKE' && ride.comboParcelSenderId === currentUserId;
@@ -2849,29 +2988,38 @@ function RideAppScreen() {
     setIsCalculatingFares(true);
 
     try {
-      const closestArea = getClosestPopularAreaMatch(queryStr);
-      const queryToUse = closestArea || queryStr;
-      let res = await Location.geocodeAsync(queryToUse);
+      const res = await searchHyderabadLocationsDetailed(queryStr);
+      const firstResult = res.results[0];
 
-      if (res.length === 0 && closestArea && queryToUse !== queryStr) {
-        res = await Location.geocodeAsync(queryStr);
+      if (!firstResult) {
+        setIsCalculatingFares(false);
+        Alert.alert(
+          res.error === 'network' ? 'Search unavailable' : 'Location not found',
+          res.error === 'network'
+            ? 'Could not search locations right now. Please check your connection and try again.'
+            : 'Please choose a suggestion or try a more specific Hyderabad location.'
+        );
+        return;
       }
 
-      if (res.length > 0) {
-        const coord = { latitude: res[0].latitude, longitude: res[0].longitude };
-        if (!isWithinHyderabadService(coord)) {
-          Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
-          setIsCalculatingFares(false);
-          return;
-        }
-        await playMarkerSound(400);
-        type === 'pickup' ? setPickupCoords(coord) : setDestCoords(coord);
-      } else {
+      const coord = { latitude: firstResult.latitude, longitude: firstResult.longitude };
+      if (!isWithinHyderabadService(coord)) {
+        Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
         setIsCalculatingFares(false);
+        return;
+      }
+
+      await playMarkerSound(400);
+      if (type === 'pickup') {
+        setPickupInput(firstResult.displayName);
+        setPickupCoords(coord);
+      } else {
+        setDestination(firstResult.displayName);
+        setDestCoords(coord);
       }
     } catch (error) {
       setIsCalculatingFares(false);
-      throw error;
+      Alert.alert('Search unavailable', 'Could not search locations right now. Please check your connection and try again.');
     }
   };
 
@@ -2896,7 +3044,22 @@ function RideAppScreen() {
       Alert.alert('Sorry service unavailable', `Service available only in Hyderabad and surroundings up to ${HYDERABAD_SERVICE_RADIUS_KM} km.`);
       return;
     }
-    const tripDistanceKm = calcDist(pickupCoords, destCoords);
+    let tripDistanceKm: number;
+    let tripDurationSeconds = routeDurationSeconds;
+    if (typeof routeDistanceKm === 'number' && routeDistanceKm > 0) {
+      tripDistanceKm = routeDistanceKm;
+    } else {
+      try {
+        const route = await getRouteDistance(pickupCoords, destCoords);
+        tripDistanceKm = route.distanceKm;
+        tripDurationSeconds = route.durationSeconds;
+        setRouteDistanceKm(route.distanceKm);
+        setRouteDurationSeconds(route.durationSeconds);
+      } catch {
+        Alert.alert('Route unavailable', 'Could not calculate road distance for this trip. Please check your connection and try again.');
+        return;
+      }
+    }
     if (!profileName || !profilePhone) {
       setBookingValidation({ visible: true, title: 'Profile required', message: 'Please sign in or create an account before booking. It only takes a moment.' });
       return;
@@ -2925,6 +3088,7 @@ function RideAppScreen() {
           passengerPhone: profilePhone,
           pickup: pickupCoords,
           drop: destCoords,
+          routeDurationSeconds: tripDurationSeconds,
           pickupAddr: pickupInput,
           dropAddr: destination,
           createdAt: Timestamp.now(),
@@ -2961,10 +3125,18 @@ function RideAppScreen() {
 
       if (matchedBikeRide?.id) {
         const comboTotalFare = (matchedBikeRide.fare || 0) + parcelFare;
-        const comboTotalDistance =
-          calcDist(pickupCoords, matchedBikeRide.pickup) +
-          calcDist(matchedBikeRide.pickup, matchedBikeRide.drop) +
-          calcDist(matchedBikeRide.drop, destCoords);
+        let comboTotalDistance = tripDistanceKm;
+        try {
+          const [toPassengerPickup, passengerTrip, fromPassengerDrop] = await Promise.all([
+            getRouteDistance(pickupCoords, matchedBikeRide.pickup),
+            getRouteDistance(matchedBikeRide.pickup, matchedBikeRide.drop),
+            getRouteDistance(matchedBikeRide.drop, destCoords),
+          ]);
+          comboTotalDistance = toPassengerPickup.distanceKm + passengerTrip.distanceKm + fromPassengerDrop.distanceKm;
+        } catch {
+          Alert.alert('Route unavailable', 'Could not calculate the full combo route distance. Please try again.');
+          return;
+        }
 
         await updateRideSafely(matchedBikeRide.id, {
           comboMode: 'PARCEL_PLUS_BIKE',
@@ -3011,6 +3183,7 @@ function RideAppScreen() {
     const rideData: Ride = {
       type: rideChoice, fare: bFare, baseFare: bFare, tip: 0,
       distance: tripDistanceKm, pickup: pickupCoords, drop: destCoords,
+      routeDurationSeconds: tripDurationSeconds,
       pickupAddr: pickupInput, dropAddr: destination, encryptedOTP: encryptOTP(generateOTP()),
       passengerId: currentUserId,
       passengerName: earnMeta?.passengerName || profileName,
@@ -4376,11 +4549,7 @@ function RideAppScreen() {
                       placeholder="Pickup Area"
                       value={pickupInput}
                       onFocus={() => handleSearchFieldFocus('pickup')}
-                      onChangeText={(v) => {
-                        setPickupInput(v);
-                        setIsCalculatingFares(!!v.trim() && !!destination.trim());
-                        setSearchSuggestions(getSearchSuggestions(v));
-                      }}
+                      onChangeText={(v) => handleLocationInputChange('pickup', v)}
                       onSubmitEditing={() => handleSearch('pickup')}
                     />
                     <Text style={styles.routeToText}>To</Text>
@@ -4389,28 +4558,32 @@ function RideAppScreen() {
                       placeholder="Drop Area"
                       value={destination}
                       onFocus={() => handleSearchFieldFocus('drop')}
-                      onChangeText={(v) => {
-                        setDestination(v);
-                        setIsCalculatingFares(!!pickupInput.trim() && !!v.trim());
-                        setSearchSuggestions(getSearchSuggestions(v));
-                      }}
+                      onChangeText={(v) => handleLocationInputChange('drop', v)}
                       onSubmitEditing={() => handleSearch('drop')}
                     />
-                    {!!searchSuggestions.length && activeSearchField && (
+                    {activeSearchField && (isLoadingSuggestions || searchSuggestionState !== 'idle' || !!searchSuggestions.length) && (
                       <View style={styles.searchSuggestionPanel}>
-                        {searchSuggestions.map((suggestion) => (
-                          <TouchableOpacity
-                            key={suggestion}
-                            style={styles.searchSuggestionItem}
-                            onPress={() => void applySearchSuggestion(activeSearchField, suggestion)}
-                          >
-                            <Text style={styles.searchSuggestionText}>{suggestion}</Text>
-                          </TouchableOpacity>
-                        ))}
+                        {isLoadingSuggestions ? (
+                          <Text style={styles.searchSuggestionText}>Searching locations...</Text>
+                        ) : searchSuggestionState === 'error' ? (
+                          <Text style={styles.searchSuggestionErrorText}>{searchSuggestionMessage}</Text>
+                        ) : searchSuggestionState === 'empty' ? (
+                          <Text style={styles.searchSuggestionEmptyText}>{searchSuggestionMessage}</Text>
+                        ) : (
+                          <FlatList
+                            data={searchSuggestions}
+                            keyExtractor={(item) => item.placeId}
+                            keyboardShouldPersistTaps="handled"
+                            renderItem={renderSuggestionItem}
+                          />
+                        )}
                       </View>
                     )}
                     {isCalculatingFares && (
                       <Text style={styles.fareCalculatingText}>Calculating your fares...</Text>
+                    )}
+                    {!!routeDistanceError && (
+                      <Text style={styles.fareCalculatingText}>{routeDistanceError}</Text>
                     )}
 
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
@@ -4530,11 +4703,7 @@ function RideAppScreen() {
                       placeholder="Pickup Area"
                       value={pickupInput}
                       onFocus={() => handleSearchFieldFocus('pickup')}
-                      onChangeText={(v) => {
-                        setPickupInput(v);
-                        setIsCalculatingFares(!!v.trim() && !!destination.trim());
-                        setSearchSuggestions(getSearchSuggestions(v));
-                      }}
+                      onChangeText={(v) => handleLocationInputChange('pickup', v)}
                       onSubmitEditing={() => handleSearch('pickup')}
                     />
                     <Text style={styles.routeToText}>To</Text>
@@ -4543,28 +4712,32 @@ function RideAppScreen() {
                       placeholder="Drop Area"
                       value={destination}
                       onFocus={() => handleSearchFieldFocus('drop')}
-                      onChangeText={(v) => {
-                        setDestination(v);
-                        setIsCalculatingFares(!!pickupInput.trim() && !!v.trim());
-                        setSearchSuggestions(getSearchSuggestions(v));
-                      }}
+                      onChangeText={(v) => handleLocationInputChange('drop', v)}
                       onSubmitEditing={() => handleSearch('drop')}
                     />
-                    {!!searchSuggestions.length && activeSearchField && (
+                    {activeSearchField && (isLoadingSuggestions || searchSuggestionState !== 'idle' || !!searchSuggestions.length) && (
                       <View style={styles.searchSuggestionPanel}>
-                        {searchSuggestions.map((suggestion) => (
-                          <TouchableOpacity
-                            key={suggestion}
-                            style={styles.searchSuggestionItem}
-                            onPress={() => void applySearchSuggestion(activeSearchField, suggestion)}
-                          >
-                            <Text style={styles.searchSuggestionText}>{suggestion}</Text>
-                          </TouchableOpacity>
-                        ))}
+                        {isLoadingSuggestions ? (
+                          <Text style={styles.searchSuggestionText}>Searching locations...</Text>
+                        ) : searchSuggestionState === 'error' ? (
+                          <Text style={styles.searchSuggestionErrorText}>{searchSuggestionMessage}</Text>
+                        ) : searchSuggestionState === 'empty' ? (
+                          <Text style={styles.searchSuggestionEmptyText}>{searchSuggestionMessage}</Text>
+                        ) : (
+                          <FlatList
+                            data={searchSuggestions}
+                            keyExtractor={(item) => item.placeId}
+                            keyboardShouldPersistTaps="handled"
+                            renderItem={renderSuggestionItem}
+                          />
+                        )}
                       </View>
                     )}
                     {isCalculatingFares && (
                       <Text style={styles.fareCalculatingText}>Calculating your fares...</Text>
+                    )}
+                    {!!routeDistanceError && (
+                      <Text style={styles.fareCalculatingText}>{routeDistanceError}</Text>
                     )}
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ marginBottom: 10 }}>
                       {(['Bike', 'Auto', 'Cab', 'ShareAuto', 'Parcel'] as RideType[]).map(r => (

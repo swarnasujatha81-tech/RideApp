@@ -5,6 +5,7 @@ export interface Ride {
   id?: string; type: RideType;
   fare: number; baseFare: number; tip: number; 
   distance: number; pickup: Coord; drop: Coord; encryptedOTP: string;
+  routeDurationSeconds?: number | null;
   acceptedAtMs?: number;
   startedAtMs?: number;
   pickupReachMinutes?: number;
@@ -81,6 +82,7 @@ export interface ShareAutoPool {
   passengerPhone: string;
   pickup: Coord;
   drop: Coord;
+  routeDurationSeconds?: number | null;
   pickupAddr?: string;
   dropAddr?: string;
   createdAt?: any;
