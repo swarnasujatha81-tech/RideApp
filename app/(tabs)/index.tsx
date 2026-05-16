@@ -32,6 +32,11 @@ import type { ChatMessage, Coord, Driver, DriverVehicleType, HelpQuestion, PoolP
 import { isActiveRideStatus } from './ride-home/types';
 
 const PASSENGER_QUOTE_DEMAND_LEVEL: DemandLevel = 'low';
+const RECENT_SEARCHES_KEY = '@rideapp:recent_location_searches_v2';
+const RECENT_SEARCH_SUGGESTION_TYPE = 'recent_search';
+const BLOCKED_DRIVER_EMAIL = 's123shareit@gmail.com';
+const BLOCKED_DRIVER_PHONE = '63002 68015';
+const BLOCKED_DRIVER_MESSAGE = 'Your account was blocked by admin due to some reasons. Please contact admin via s123shareit@gmail.com or 63002 68015 to activate.';
 
 type RideBillRecord = RideHistory & {
   distance?: number;
@@ -39,6 +44,11 @@ type RideBillRecord = RideHistory & {
   dropTimeMs?: number;
   totalTimeMinutes?: number;
   billGeneratedAtMs?: number;
+};
+
+type StoredLocationSuggestion = LocationSuggestion & {
+  usedCount?: number;
+  lastUsedAt?: number;
 };
 
 const formatBillTime = (value?: number) => (value ? new Date(value).toLocaleString() : 'N/A');
@@ -121,6 +131,7 @@ function RideAppScreen() {
   const [destCoords, setDestCoords] = useState<Coord | null>(null);
   const [activeSearchField, setActiveSearchField] = useState<'pickup' | 'drop' | null>(null);
   const [searchSuggestions, setSearchSuggestions] = useState<LocationSuggestion[]>([]);
+  const [recentSearchSuggestions, setRecentSearchSuggestions] = useState<StoredLocationSuggestion[]>([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [searchSuggestionState, setSearchSuggestionState] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle');
   const [searchSuggestionMessage, setSearchSuggestionMessage] = useState('');
@@ -395,11 +406,10 @@ function RideAppScreen() {
       }
 
       await applyDriverRecordToState(driverDocId, data);
-      const isBanned = !!data?.banned;
+      const isBanned = data?.banned === true || data?.isBlocked === true || data?.status === 'blocked';
       if (isBanned) {
-        const defaultMsg = 'your account was blocked by admin due to some issues like extra money asked or abusing or etc. please contact our service number 9642395617 to know more.';
         setDriverBanned(true);
-        setBannedMessage(data?.bannedMessage || defaultMsg);
+        setBannedMessage(data?.bannedMessage || data?.blockReason || BLOCKED_DRIVER_MESSAGE);
         setShowBlockedModal(true);
         setIsIdentitySet(false);
         setDriverSubscriptionActive(false);
@@ -1417,12 +1427,16 @@ function RideAppScreen() {
     const trimmed = query.trim();
     const requestId = suggestionRequestIdRef.current + 1;
     suggestionRequestIdRef.current = requestId;
+    const recentFallback = recentSearchSuggestions
+      .slice(0, 3)
+      .map((item) => ({ ...item, placeType: RECENT_SEARCH_SUGGESTION_TYPE }));
 
     if (trimmed.length < 2 || trimmed.toLowerCase() === 'current location') {
-      setSearchSuggestions([]);
+      setSearchSuggestions(recentFallback);
       setIsLoadingSuggestions(false);
-      setSearchSuggestionState('idle');
-      setSearchSuggestionMessage('');
+      setSearchSuggestionState(recentFallback.length ? 'ready' : 'idle');
+      setSearchSuggestionMessage(recentFallback.length ? 'Previous searches' : '');
+      setActiveSearchField(field);
       return;
     }
 
@@ -1432,20 +1446,21 @@ function RideAppScreen() {
     const result = await searchHyderabadLocationsDetailed(trimmed);
     if (suggestionRequestIdRef.current !== requestId) return;
 
-    setSearchSuggestions(result.results);
+    const nextSuggestions = result.results.length ? result.results : recentFallback;
+    setSearchSuggestions(nextSuggestions);
     setIsLoadingSuggestions(false);
     if (result.error === 'network') {
       setSearchSuggestionState('error');
       setSearchSuggestionMessage('Could not load locations right now. Check your connection and try again.');
     } else if (!result.results.length) {
-      setSearchSuggestionState('empty');
-      setSearchSuggestionMessage('No locations found');
+      setSearchSuggestionState(recentFallback.length ? 'ready' : 'empty');
+      setSearchSuggestionMessage(recentFallback.length ? 'Previous searches' : 'No locations found');
     } else {
       setSearchSuggestionState('ready');
       setSearchSuggestionMessage('');
     }
     setActiveSearchField(field);
-  }, []);
+  }, [recentSearchSuggestions]);
 
   const debouncedLocationSearch = useMemo(
     () => debounce((field: 'pickup' | 'drop', query: string) => {
@@ -1458,12 +1473,58 @@ function RideAppScreen() {
     debouncedLocationSearch.cancel();
   }, [debouncedLocationSearch]);
 
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem(RECENT_SEARCHES_KEY)
+      .then((raw) => {
+        if (!raw || !alive) return;
+        const parsed = JSON.parse(raw) as StoredLocationSuggestion[];
+        if (Array.isArray(parsed)) {
+          setRecentSearchSuggestions(parsed.slice(0, 10));
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const saveRecentSearchSuggestion = useCallback(async (suggestion: LocationSuggestion) => {
+    const storedSuggestion: StoredLocationSuggestion = {
+      ...suggestion,
+      placeType: suggestion.placeType === RECENT_SEARCH_SUGGESTION_TYPE ? undefined : suggestion.placeType,
+      usedCount: 1,
+      lastUsedAt: Date.now(),
+    };
+
+    const next = [
+      storedSuggestion,
+      ...recentSearchSuggestions.filter((item) => item.placeId !== suggestion.placeId),
+    ]
+      .map((item, index) => index === 0 ? item : { ...item })
+      .sort((a, b) => ((b.usedCount || 1) - (a.usedCount || 1)) || ((b.lastUsedAt || 0) - (a.lastUsedAt || 0)))
+      .slice(0, 10);
+
+    const existing = recentSearchSuggestions.find((item) => item.placeId === suggestion.placeId);
+    if (existing) {
+      next[0] = {
+        ...storedSuggestion,
+        usedCount: (existing.usedCount || 1) + 1,
+      };
+      next.sort((a, b) => ((b.usedCount || 1) - (a.usedCount || 1)) || ((b.lastUsedAt || 0) - (a.lastUsedAt || 0)));
+    }
+
+    setRecentSearchSuggestions(next);
+    await AsyncStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next)).catch(() => {});
+  }, [recentSearchSuggestions]);
+
   const handleSearchFieldFocus = useCallback((field: 'pickup' | 'drop') => {
     if (!isPassengerCardExpanded) animatePassengerCard(true);
     setActiveSearchField(field);
     const query = field === 'pickup' ? pickupInput : destination;
-    debouncedLocationSearch(field, query);
-  }, [animatePassengerCard, debouncedLocationSearch, destination, isPassengerCardExpanded, pickupInput]);
+    void runLocationSearch(field, query);
+  }, [animatePassengerCard, destination, isPassengerCardExpanded, pickupInput, runLocationSearch]);
 
   const handleLocationInputChange = useCallback((field: 'pickup' | 'drop', value: string) => {
     setActiveSearchField(field);
@@ -1508,6 +1569,7 @@ function RideAppScreen() {
       setDestination(suggestion.displayName);
       setDestCoords(coord);
     }
+    await saveRecentSearchSuggestion(suggestion);
     await playMarkerSound(400);
   };
 
@@ -1522,7 +1584,11 @@ function RideAppScreen() {
       onPress={() => handleSuggestionPress(item)}
     >
       <View style={styles.searchSuggestionIconWrap}>
-        <Ionicons name="location-sharp" size={17} color="#2563EB" />
+        <Ionicons
+          name={item.placeType === RECENT_SEARCH_SUGGESTION_TYPE ? 'time-outline' : 'location-sharp'}
+          size={17}
+          color={item.placeType === RECENT_SEARCH_SUGGESTION_TYPE ? '#64748B' : '#2563EB'}
+        />
       </View>
       <View style={styles.searchSuggestionTextWrap}>
         <Text numberOfLines={1} ellipsizeMode="tail" style={styles.searchSuggestionTitle}>{item.title}</Text>
@@ -1558,6 +1624,21 @@ function RideAppScreen() {
 
     if (nearbyOnlineDrivers === 0) return 0; // Triggers 'low' demand logic as per requirement
     return nearbyWaitingUsers / nearbyOnlineDrivers;
+  };
+
+  const getNearbyActivePassengerCount = () => {
+    const center = pickupCoords || location;
+    if (!center) return 0;
+
+    const nearbyPassengerIds = new Set<string>();
+    rides.forEach((ride) => {
+      if (ride.status !== 'waiting') return;
+      if (calcDist(center, ride.pickup) > 4) return;
+      nearbyPassengerIds.add(ride.passengerId || ride.id || `${ride.pickup.latitude}:${ride.pickup.longitude}`);
+    });
+
+    if (currentUserId) nearbyPassengerIds.add(currentUserId);
+    return nearbyPassengerIds.size;
   };
 
   const getAppUserFactor = () => {
@@ -1628,7 +1709,7 @@ function RideAppScreen() {
 
   const getDynamicBikeFare = (distanceKm: number) => {
     const now = new Date().getHours();
-    return calculateRideFare('bike', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare;
+    return calculateRideFare('bike', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now, getNearbyActivePassengerCount()).finalFare;
   };
 
   const getDynamicParcelFare = (distanceKm: number) => {
@@ -1638,7 +1719,7 @@ function RideAppScreen() {
 
   const getDynamicAutoFare = (distanceKm: number) => {
     const now = new Date().getHours();
-    return calculateRideFare('auto', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare;
+    return calculateRideFare('auto', distanceKm, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now, getNearbyActivePassengerCount()).finalFare;
   };
 
   const getDynamicCabFare = (distanceKm: number) => {
@@ -2884,12 +2965,13 @@ function RideAppScreen() {
 
         const dist = route.distanceKm;
         const now = new Date().getHours();
+        const nearbyActivePassengers = getNearbyActivePassengerCount();
 
         setRouteDistanceKm(dist);
         setRouteDurationSeconds(route.durationSeconds);
         setFares({
-          Bike: calculateRideFare('bike', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
-          Auto: calculateRideFare('auto', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
+          Bike: calculateRideFare('bike', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now, nearbyActivePassengers).finalFare,
+          Auto: calculateRideFare('auto', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now, nearbyActivePassengers).finalFare,
           Cab: calculateRideFare('car', dist, 0, 0, PASSENGER_QUOTE_DEMAND_LEVEL, now).finalFare,
           ShareAuto: getShareAutoFare(dist, 3),
           Parcel: getDynamicParcelFare(dist),
@@ -4215,9 +4297,9 @@ function RideAppScreen() {
         {driverBanned && (
           <BlockedAccount
             visible={showBlockedModal}
-            message={bannedMessage || 'your account was blocked by admin due to some issues like extra money asked or abusing or etc. please contact our service number 9642395617 to know more.'}
-            contact={'9642395617'}
-            onClose={() => setShowBlockedModal(false)}
+            message={bannedMessage || BLOCKED_DRIVER_MESSAGE}
+            contact={BLOCKED_DRIVER_PHONE}
+            email={BLOCKED_DRIVER_EMAIL}
           />
         )}
       {mode === 'USER' ? (
@@ -4461,7 +4543,11 @@ function RideAppScreen() {
       {!(mode === 'USER' && !userBookedRide && isPassengerCardExpanded) && (
       <View style={styles.header}>
         <Pressable style={styles.badge} onPress={() => setMode(mode === 'USER' ? 'DRIVER' : 'USER')}>
-          <Text style={{fontWeight:'700'}}>{mode === 'USER' ? '👤 Passenger' : `🚗 Pro Driver`}</Text>
+          {mode === 'USER' ? (
+            <Ionicons name="car-sport" size={22} color="#111827" />
+          ) : (
+            <Text style={{fontWeight:'700'}}>Pro Driver</Text>
+          )}
         </Pressable>
         <View style={{position: 'relative'}}>
           <Pressable style={styles.logout} onPress={() => setShowLogoutMenu(!showLogoutMenu)}>

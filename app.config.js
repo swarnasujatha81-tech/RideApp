@@ -60,7 +60,7 @@ module.exports = {
       openRouteServiceApiKey: process.env.EXPO_PUBLIC_ORS_API_KEY || process.env.ORS_API_KEY || '',
       router: {},
       eas: {
-        projectId: 'c011d683-3520-440d-be83-e13064807704',
+        projectId: "cb9eec1b-66d4-4610-8663-0f4f2ec4bc47"
       },
     },
   },

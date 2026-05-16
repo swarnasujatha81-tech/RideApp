@@ -83,13 +83,61 @@ export const calculateSlabDistanceFare = (rideType: RidePricingType, distanceKm:
   return fare;
 };
 
+const interpolate = (value: number, minValue: number, maxValue: number, minResult: number, maxResult: number) => {
+  if (maxValue <= minValue) return minResult;
+  const ratio = Math.max(0, Math.min(1, (value - minValue) / (maxValue - minValue)));
+  return minResult + ((maxResult - minResult) * ratio);
+};
+
+export const getPassengerDemandMultiplier = (passengerCountIn4km?: number) => {
+  const count = Math.max(0, passengerCountIn4km ?? 0);
+  let multiplier = 1;
+
+  if (count < 7) multiplier = interpolate(count, 0, 6, 0.85, 0.95);
+  else if (count <= 50) multiplier = interpolate(count, 7, 50, 0.95, 1.0);
+  else if (count <= 150) multiplier = interpolate(count, 51, 150, 1.0, 1.1);
+  else if (count <= 220) multiplier = interpolate(count, 151, 220, 1.1, 1.2);
+  else if (count <= 340) multiplier = interpolate(count, 221, 340, 1.2, 1.4);
+  else if (count <= 550) multiplier = interpolate(count, 341, 550, 1.4, 1.8);
+  else multiplier = 2.0;
+
+  return Math.min(2.5, Math.max(0.85, multiplier));
+};
+
+const getBikeBaseFare = (distanceKm: number) => {
+  const d = Math.max(0, distanceKm);
+  if (d < 1) return 19;
+  if (d < 2) return 14 + d * 7;
+  if (d < 3) return 17 + d * 9;
+  if (d < 4) return 20 + d * 10;
+  if (d < 5) return 30 + d * 11;
+  if (d < 8) return 35 + d * 9;
+  if (d < 10) return 50 + d * 8.5;
+  if (d < 13) return 60 + d * 8.1;
+  return 80 + d * 7.3;
+};
+
+const getAutoBaseFare = (distanceKm: number) => {
+  const d = Math.max(0, distanceKm);
+  if (d < 1) return 35;
+  if (d < 2) return 25 + d * 10;
+  if (d < 3) return 30 + d * 12;
+  if (d < 4) return 35 + d * 13;
+  if (d < 5) return 45 + d * 14;
+  if (d < 8) return 55 + d * 12;
+  if (d < 10) return 70 + d * 11;
+  if (d < 13) return 85 + d * 10;
+  return 100 + d * 9;
+};
+
 export const calculateRideFare = (
   rideType: RidePricingType,
   distanceKm: number,
   durationMinutes: number,
   pickupDistanceKm: number,
   demandLevel: DemandLevel,
-  timeOfDay: number
+  timeOfDay: number,
+  passengerCountIn4km?: number
 ): RideFareQuote => {
   const config = VEHICLE_FARE_SETTINGS[rideType];
   const safeDistance = normalizeFareDistanceKm(distanceKm);
@@ -119,17 +167,16 @@ export const calculateRideFare = (
     };
   }
 
-  // Auto fares follow the requested direct distance rules.
+  // Auto fares follow the requested direct distance rules and passenger demand multiplier.
   if (rideType === 'auto') {
-    const d = safeDistance <= 1 + FIRST_KM_FARE_TOLERANCE_KM ? 1 : safeDistance;
-    const fareForDistance = d <= 1
-      ? (demandLevel === 'low' ? 45 : demandLevel === 'normal' ? 45 : 50)
-      : (demandLevel === 'low' ? 20 + d * 9 : demandLevel === 'normal' ? 18 + d * 14 : 25 + d * 13);
+    const distanceFare = getAutoBaseFare(safeDistance);
+    const surgeMultiplier = getPassengerDemandMultiplier(passengerCountIn4km);
+    const fareForDistance = distanceFare * surgeMultiplier;
 
     return {
       finalFare: Math.round(fareForDistance),
       breakdown: {
-        distanceFare: Math.round(fareForDistance),
+        distanceFare: Math.round(distanceFare),
         timeFare: 0,
         pickupFare: 0,
         surge: 0,
@@ -137,22 +184,21 @@ export const calculateRideFare = (
         nightCharge: 0,
         randomAdjustment: 0,
         minimumFare: 0,
-        surgeMultiplier: 1,
+        surgeMultiplier,
       },
     };
   }
   
-  // Bike fares: use the new simple formulas provided by product requirements.
+  // Bike fares follow the requested direct distance rules and passenger demand multiplier.
   if (rideType === 'bike') {
-    const d = safeDistance <= 1 + FIRST_KM_FARE_TOLERANCE_KM ? 1 : safeDistance;
-    const fareForDistance = d <= 1
-      ? (demandLevel === 'low' ? 19 : demandLevel === 'normal' ? 20 : 23)
-      : (demandLevel === 'low' ? 13 + d * 6.9 : demandLevel === 'normal' ? 14 + d * 8.5 : 15 + d * 9.7);
+    const distanceFare = getBikeBaseFare(safeDistance);
+    const surgeMultiplier = getPassengerDemandMultiplier(passengerCountIn4km);
+    const fareForDistance = distanceFare * surgeMultiplier;
 
     return {
       finalFare: Math.round(fareForDistance),
       breakdown: {
-        distanceFare: Math.round(fareForDistance),
+        distanceFare: Math.round(distanceFare),
         timeFare: 0,
         pickupFare: 0,
         surge: 0,
@@ -160,7 +206,7 @@ export const calculateRideFare = (
         nightCharge: 0,
         randomAdjustment: 0,
         minimumFare: 0,
-        surgeMultiplier: 1,
+        surgeMultiplier,
       },
     };
   }
